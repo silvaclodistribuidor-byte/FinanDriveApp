@@ -1,5 +1,5 @@
 import React, { useState } from 'react';
-import { X, Check, DollarSign, Calendar, Tag, FileText, Clock, Gauge } from 'lucide-react';
+import { X, Check, DollarSign, Tag, FileText, Clock, Gauge } from 'lucide-react';
 import { TransactionType, Bill } from '../types';
 
 interface TransactionModalProps {
