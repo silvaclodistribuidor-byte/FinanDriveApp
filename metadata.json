@@ -1,0 +1,7 @@
+{
+  "name": "FinanDrive",
+  "description": "A professional financial management dashboard for ride-share drivers to track shifts, manage bills, and analyze earnings.",
+  "requestFramePermissions": [
+    "microphone"
+  ]
+}
