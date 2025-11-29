@@ -39,7 +39,7 @@ import { ReportsTab } from './components/ReportsTab';
 import { loadAppData, saveAppData } from "./services/firestoreService";
 import { Transaction, TransactionType, ExpenseCategory, Bill, ShiftState, DEFAULT_CATEGORIES } from './types';
 
-// Force refresh ID: v3
+// Force refresh ID: v4-fixes
 
 const getTodayString = () => {
   const now = new Date();
@@ -203,12 +203,17 @@ function App() {
 
   const handleEntrySave = (value: number, description?: string, expenseCategory?: ExpenseCategory) => {
     if (!entryCategory) return;
+    
     setShiftState(prev => {
       const newState = { ...prev };
-      if (entryCategory === 'uber') newState.earnings.uber += value;
-      else if (entryCategory === '99') newState.earnings.n99 += value;
-      else if (entryCategory === 'indrive') newState.earnings.indrive += value;
-      else if (entryCategory === 'private') newState.earnings.private += value;
+      
+      // ATUALIZAÇÃO: Apps substituem o valor (atualização) em vez de somar
+      if (entryCategory === 'uber') newState.earnings.uber = value;
+      else if (entryCategory === '99') newState.earnings.n99 = value;
+      else if (entryCategory === 'indrive') newState.earnings.indrive = value;
+      else if (entryCategory === 'private') newState.earnings.private = value;
+      
+      // KM e Despesas continuam somando
       else if (entryCategory === 'km') newState.km += value;
       else if (entryCategory === 'expense') {
         newState.expenses += value;
@@ -401,18 +406,14 @@ function App() {
   const currentShiftTotal = shiftState.earnings.uber + shiftState.earnings.n99 + shiftState.earnings.indrive + shiftState.earnings.private;
   const currentShiftLiquid = currentShiftTotal - shiftState.expenses;
   
-  // Alteração solicitada: Atualização baseada em minutos para maior estabilidade visual
   const currentShiftMinutes = Math.floor(shiftState.elapsedSeconds / 60);
-  // Usa o minuto completo para o cálculo de taxa, evitando flutuação a cada segundo
   const currentShiftHoursFromMinutes = currentShiftMinutes / 60;
-  // Fallback para precisão de segundos se for menos de 1 minuto para não mostrar infinito/zero estranho
   const currentShiftRph = (currentShiftMinutes > 0) 
     ? currentShiftTotal / currentShiftHoursFromMinutes 
     : (shiftState.elapsedSeconds > 0 ? (currentShiftTotal / (shiftState.elapsedSeconds / 3600)) : 0);
     
   const currentShiftRpk = shiftState.km > 0 ? currentShiftTotal / shiftState.km : 0;
   
-  // Para salvar, usamos a precisão total
   const currentShiftHoursPrecise = shiftState.elapsedSeconds / 3600;
 
   const pieData = useMemo(() => [
@@ -422,7 +423,8 @@ function App() {
 
   const handleAddTransaction = (data: any) => {
     const newTransaction: Transaction = { id: Math.random().toString(36).substr(2, 9), ...data };
-    setTransactions(prev => [newTransaction, ...prev]);
+    const newTransactions = [newTransaction, ...transactions];
+    setTransactions(newTransactions);
   };
 
   const handleSaveShift = (data: { amount: number; description: string; date: string; mileage: number; durationHours: number }) => {
@@ -441,8 +443,18 @@ function App() {
       date: data.date
     }));
     
-    // Atualiza estado (o useEffect vai salvar no Firebase automaticamente)
-    setTransactions(prev => [incomeTransaction, ...expenseTransactions, ...prev]);
+    // Lista atualizada
+    const newTransactions = [incomeTransaction, ...expenseTransactions, ...transactions];
+    
+    // 1. Atualiza estado local
+    setTransactions(newTransactions);
+    
+    // 2. FORÇA SALVAMENTO IMEDIATO NO FIRESTORE (Correção para garantir persistência)
+    saveAppData({
+      transactions: newTransactions,
+      bills: bills,
+      categories: categories
+    }).catch(err => console.error("Erro forçado ao salvar turno:", err));
     
     // Reseta estado do turno
     setShiftState({ isActive: false, isPaused: false, startTime: null, elapsedSeconds: 0, earnings: { uber: 0, n99: 0, indrive: 0, private: 0 }, expenses: 0, expenseList: [], km: 0 });
@@ -489,7 +501,7 @@ function App() {
             <LayoutDashboard size={20} /><span className={`${activeTab === 'shift' ? 'md:hidden lg:inline' : ''}`}>Visão Geral</span>
           </button>
           <button onClick={() => { setActiveTab('shift'); setMobileMenuOpen(false); }} className={`w-full flex items-center gap-3 px-4 py-3 rounded-xl transition-all font-medium ${activeTab === 'shift' ? 'bg-indigo-600 text-white shadow-lg shadow-indigo-900/20' : 'hover:bg-slate-800 hover:text-white'}`}>
-            <Play size={20} /><span className={`${activeTab === 'shift' ? 'md:hidden lg:inline' : ''}`}>Turno Atual</span>
+            <Play size={20} /><span className={`${activeTab === 'shift' ? 'md:hidden lg:inline' : ''}`}>Turno</span>
           </button>
           <button onClick={() => { setActiveTab('reports'); setMobileMenuOpen(false); }} className={`w-full flex items-center gap-3 px-4 py-3 rounded-xl transition-all font-medium ${activeTab === 'reports' ? 'bg-indigo-600 text-white shadow-lg shadow-indigo-900/20' : 'hover:bg-slate-800 hover:text-white'}`}>
             <PieChartIcon size={20} /><span className={`${activeTab === 'shift' ? 'md:hidden lg:inline' : ''}`}>Relatórios</span>
@@ -528,14 +540,6 @@ function App() {
                 {showValues ? <Eye size={20} /> : <EyeOff size={20} />}
               </button>
             </div>
-            <div className="flex flex-wrap gap-2 w-full md:w-auto">
-              <button onClick={() => setIsTransModalOpen(true)} className="flex-1 md:flex-none flex items-center justify-center gap-2 bg-white text-slate-700 border border-slate-200 px-4 py-2.5 rounded-xl hover:bg-slate-50 transition-all font-medium text-sm">
-                <TrendingDown size={16} className="text-rose-500" />Novo Lançamento
-              </button>
-              <button onClick={() => { setActiveTab('shift'); handleStartShift(); }} className="flex-1 md:flex-none flex items-center justify-center gap-2 bg-slate-900 text-white px-5 py-2.5 rounded-xl hover:bg-slate-800 transition-all shadow-lg shadow-slate-300 active:scale-95 font-medium">
-                <Play size={18} />Iniciar Turno
-              </button>
-            </div>
           </div>
         )}
 
@@ -571,10 +575,10 @@ function App() {
                 {shiftState.isActive && (
                    <button 
                      onClick={handleEditStartTime} 
-                     className="absolute top-2 right-2 p-1.5 text-slate-600 hover:text-white bg-slate-800/50 hover:bg-slate-700 rounded-lg transition-colors"
+                     className="absolute top-2 right-2 p-2 text-white bg-indigo-600 hover:bg-indigo-500 rounded-lg shadow-md transition-colors z-20"
                      title="Editar horário de início"
                    >
-                     <Edit2 size={14} />
+                     <Edit2 size={16} />
                    </button>
                 )}
               </div>
