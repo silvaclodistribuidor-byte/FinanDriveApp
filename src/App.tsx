@@ -24,7 +24,9 @@ import {
   Filter,
   ChevronRight,
   ArrowDownCircle,
-  ArrowUpCircle
+  ArrowUpCircle,
+  CheckCircle2,
+  AlertCircle
 } from 'lucide-react';
 import { PieChart, Pie, Cell, Tooltip, ResponsiveContainer, Legend } from 'recharts';
 import { StatCard } from './components/StatCard';
@@ -37,7 +39,7 @@ import { ReportsTab } from './components/ReportsTab';
 import { loadAppData, saveAppData } from "./services/firestoreService";
 import { Transaction, TransactionType, ExpenseCategory, Bill, ShiftState, DEFAULT_CATEGORIES } from './types';
 
-// Force refresh ID: v2
+// Force refresh ID: v3
 
 const getTodayString = () => {
   const now = new Date();
@@ -234,6 +236,31 @@ function App() {
     setIsShiftModalOpen(true);
   };
 
+  // Função para editar o horário de início manualmente
+  const handleEditStartTime = () => {
+    if (!shiftState.isActive) return;
+    
+    const currentStart = shiftState.startTime ? new Date(shiftState.startTime) : new Date();
+    const defaultTime = `${String(currentStart.getHours()).padStart(2, '0')}:${String(currentStart.getMinutes()).padStart(2, '0')}`;
+    
+    const newTimeStr = window.prompt("Ajustar horário de início (HH:mm):", defaultTime);
+    
+    if (newTimeStr && /^\d{2}:\d{2}$/.test(newTimeStr)) {
+      const [h, m] = newTimeStr.split(':').map(Number);
+      const newStartDate = new Date();
+      newStartDate.setHours(h, m, 0, 0);
+      
+      // Calcular novo tempo decorrido em segundos
+      const newElapsed = Math.floor((Date.now() - newStartDate.getTime()) / 1000);
+      
+      setShiftState(prev => ({
+        ...prev,
+        startTime: newStartDate.getTime(),
+        elapsedSeconds: Math.max(0, newElapsed)
+      }));
+    }
+  };
+
   const formatTime = (seconds: number) => {
     const h = Math.floor(seconds / 3600);
     const m = Math.floor((seconds % 3600) / 60);
@@ -318,6 +345,14 @@ function App() {
     return { totalIncome, totalExpense, netProfit, profitMargin, earningsPerKm, earningsPerHour, dailyGoal, pendingBillsTotal, earningsToday, goalExplanation };
   }, [transactions, bills, workDays]);
 
+  // Totais para aba de Contas
+  const billsSummary = useMemo(() => {
+    return {
+      paid: bills.filter(b => b.isPaid).reduce((acc, b) => acc + b.amount, 0),
+      pending: bills.filter(b => !b.isPaid).reduce((acc, b) => acc + b.amount, 0)
+    };
+  }, [bills]);
+
   const filteredHistory = useMemo(() => {
     const today = new Date();
     today.setHours(0, 0, 0, 0);
@@ -365,9 +400,20 @@ function App() {
 
   const currentShiftTotal = shiftState.earnings.uber + shiftState.earnings.n99 + shiftState.earnings.indrive + shiftState.earnings.private;
   const currentShiftLiquid = currentShiftTotal - shiftState.expenses;
-  const currentShiftHoursPrecise = shiftState.elapsedSeconds / 3600;
-  const currentShiftRph = (currentShiftHoursPrecise > 0) ? currentShiftTotal / currentShiftHoursPrecise : 0;
+  
+  // Alteração solicitada: Atualização baseada em minutos para maior estabilidade visual
+  const currentShiftMinutes = Math.floor(shiftState.elapsedSeconds / 60);
+  // Usa o minuto completo para o cálculo de taxa, evitando flutuação a cada segundo
+  const currentShiftHoursFromMinutes = currentShiftMinutes / 60;
+  // Fallback para precisão de segundos se for menos de 1 minuto para não mostrar infinito/zero estranho
+  const currentShiftRph = (currentShiftMinutes > 0) 
+    ? currentShiftTotal / currentShiftHoursFromMinutes 
+    : (shiftState.elapsedSeconds > 0 ? (currentShiftTotal / (shiftState.elapsedSeconds / 3600)) : 0);
+    
   const currentShiftRpk = shiftState.km > 0 ? currentShiftTotal / shiftState.km : 0;
+  
+  // Para salvar, usamos a precisão total
+  const currentShiftHoursPrecise = shiftState.elapsedSeconds / 3600;
 
   const pieData = useMemo(() => [
     { name: 'Ganhos', value: stats.totalIncome, color: '#3b82f6' },
@@ -394,7 +440,11 @@ function App() {
       category: exp.category,
       date: data.date
     }));
+    
+    // Atualiza estado (o useEffect vai salvar no Firebase automaticamente)
     setTransactions(prev => [incomeTransaction, ...expenseTransactions, ...prev]);
+    
+    // Reseta estado do turno
     setShiftState({ isActive: false, isPaused: false, startTime: null, elapsedSeconds: 0, earnings: { uber: 0, n99: 0, indrive: 0, private: 0 }, expenses: 0, expenseList: [], km: 0 });
   };
 
@@ -512,12 +562,21 @@ function App() {
             </div>
 
             <div className="grid grid-cols-2 md:grid-cols-4 gap-2 mb-3 shrink-0">
-              <div className="bg-slate-900/80 rounded-xl p-3 border border-slate-800 shadow-lg col-span-2 flex flex-col justify-center items-center">
+              <div className="bg-slate-900/80 rounded-xl p-3 border border-slate-800 shadow-lg col-span-2 flex flex-col justify-center items-center relative group">
                 <div className="text-slate-500 text-[10px] font-bold uppercase tracking-wider mb-1 flex items-center gap-2"><Clock size={10} /> Tempo</div>
                 <div className="text-3xl md:text-4xl font-mono font-bold text-white tracking-tighter">
                   {formatTime(shiftState.elapsedSeconds).split(' ')[0]}
                   <span className="text-base md:text-xl text-slate-500 ml-1">{formatTime(shiftState.elapsedSeconds).split(' ').slice(1).join(' ')}</span>
                 </div>
+                {shiftState.isActive && (
+                   <button 
+                     onClick={handleEditStartTime} 
+                     className="absolute top-2 right-2 p-1.5 text-slate-600 hover:text-white bg-slate-800/50 hover:bg-slate-700 rounded-lg transition-colors"
+                     title="Editar horário de início"
+                   >
+                     <Edit2 size={14} />
+                   </button>
+                )}
               </div>
               <div className="bg-gradient-to-br from-emerald-900 to-slate-900 rounded-xl p-3 border border-emerald-800/30 shadow-lg col-span-2 flex flex-col justify-center items-center relative overflow-hidden">
                 <div className="text-emerald-400/80 text-[10px] font-bold uppercase tracking-wider mb-1 flex items-center gap-2"><Wallet size={10} /> Líquido</div>
@@ -652,15 +711,33 @@ function App() {
         
         {activeTab === 'bills' && (
           <div className="space-y-6 animate-in fade-in slide-in-from-bottom-4 duration-500">
+            <div className="grid grid-cols-2 gap-4">
+              <div className="bg-white p-5 rounded-2xl shadow-sm border border-emerald-100 flex items-center justify-between">
+                <div>
+                   <p className="text-xs font-bold text-emerald-600 uppercase mb-1">Total Pago</p>
+                   <h3 className="text-2xl font-bold text-emerald-700">{formatCurrency(billsSummary.paid)}</h3>
+                </div>
+                <div className="bg-emerald-50 p-3 rounded-full text-emerald-600"><CheckCircle2 size={24} /></div>
+              </div>
+              <div className="bg-white p-5 rounded-2xl shadow-sm border border-rose-100 flex items-center justify-between">
+                <div>
+                   <p className="text-xs font-bold text-rose-600 uppercase mb-1">A Pagar</p>
+                   <h3 className="text-2xl font-bold text-rose-700">{formatCurrency(billsSummary.pending)}</h3>
+                </div>
+                <div className="bg-rose-50 p-3 rounded-full text-rose-600"><AlertCircle size={24} /></div>
+              </div>
+            </div>
+
             <div className="flex justify-between items-center bg-white p-6 rounded-2xl shadow-sm border border-slate-200">
               <div>
                 <h2 className="text-lg font-bold text-slate-800">Contas a Pagar</h2>
-                <p className="text-slate-500 text-sm">Gerencie suas obrigações futuras e mantenha o caixa positivo.</p>
+                <p className="text-slate-500 text-sm">Gerencie suas obrigações futuras.</p>
               </div>
               <button onClick={() => { setEditingBill(null); setIsBillModalOpen(true); }} className="flex items-center gap-2 bg-rose-600 text-white px-4 py-2 rounded-lg hover:bg-rose-700 transition-colors shadow-lg shadow-rose-200">
-                <Plus size={16} /> Adicionar Conta
+                <Plus size={16} /> Adicionar
               </button>
             </div>
+            
             <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
               {bills.map(bill => (
                 <div key={bill.id} className={`p-5 rounded-xl border transition-all ${bill.isPaid ? 'bg-slate-50 border-slate-200 opacity-75' : 'bg-white border-rose-100 shadow-sm'}`}>
