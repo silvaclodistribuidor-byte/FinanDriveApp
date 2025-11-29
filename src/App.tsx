@@ -27,7 +27,8 @@ import {
   ArrowUpCircle,
   CheckCircle2,
   AlertCircle,
-  LogOut
+  LogOut,
+  Lock
 } from 'lucide-react';
 import { PieChart, Pie, Cell, Tooltip, ResponsiveContainer, Legend } from 'recharts';
 import { StatCard } from './components/StatCard';
@@ -38,9 +39,9 @@ import { BillModal } from './components/BillModal';
 import { SettingsModal } from './components/SettingsModal';
 import { ReportsTab } from './components/ReportsTab';
 import { Login } from './components/Login';
-import { loadAppData, saveAppData, auth, logoutUser } from "./services/firestoreService";
+import { loadAppData, saveAppData, auth, logoutUser, getOrCreateUserSubscription, checkSubscriptionStatus } from "./services/firestoreService";
 import { Transaction, TransactionType, ExpenseCategory, Bill, ShiftState, DEFAULT_CATEGORIES } from './types';
-import { onAuthStateChanged, User } from "firebase/auth";
+import { onAuthStateChanged, type User } from 'firebase/auth';
 
 const getTodayString = () => {
   const now = new Date();
@@ -88,9 +89,12 @@ const renderCustomizedLabel = ({ cx, cy, midAngle, innerRadius, outerRadius, per
 const INITIAL_TRANSACTIONS: Transaction[] = [];
 const INITIAL_BILLS: Bill[] = [];
 
+type SubscriptionStatus = 'loading' | 'active' | 'expired';
+
 function App() {
   const [user, setUser] = useState<User | null>(null);
   const [authLoading, setAuthLoading] = useState(true);
+  const [subscriptionStatus, setSubscriptionStatus] = useState<SubscriptionStatus>('loading');
 
   // App Data State
   const [transactions, setTransactions] = useState<Transaction[]>(INITIAL_TRANSACTIONS);
@@ -140,43 +144,74 @@ function App() {
     }
     const unsubscribe = onAuthStateChanged(auth, (currentUser) => {
       setUser(currentUser);
-      setAuthLoading(false);
+      if (!currentUser) {
+        setAuthLoading(false);
+        setSubscriptionStatus('loading'); // Reset sub status on logout
+      }
+      // Se tiver user, o authLoading só termina depois de checar a assinatura no próximo useEffect
     });
     return () => unsubscribe();
   }, []);
 
-  // 2. Carregar dados quando o usuário muda
+  // 2. Verificar Assinatura e Carregar dados
   useEffect(() => {
-    if (user) {
-      setIsLoadingData(true);
-      loadAppData(user.uid).then((data) => {
+    const initUserData = async () => {
+      if (user) {
+        // A. Checar Assinatura
+        const sub = await getOrCreateUserSubscription(user.uid);
+        if (sub) {
+          const status = checkSubscriptionStatus(sub);
+          setSubscriptionStatus(status);
+          
+          // Se expirado, não carrega dados para economizar
+          if (status === 'expired') {
+            setAuthLoading(false);
+            return;
+          }
+        } else {
+          // Fallback se falhar conexão (permite acesso ou bloqueia? Aqui bloqueio por segurança)
+          console.error("Não foi possível verificar assinatura");
+          // setSubscriptionStatus('expired'); 
+          // Para evitar travar se a internet cair logo após login, poderiamos deixar active,
+          // mas seguindo a regra estrita:
+          setSubscriptionStatus('active'); 
+        }
+
+        // B. Carregar Dados do App (apenas se ativo)
+        setIsLoadingData(true);
+        const data = await loadAppData(user.uid);
+        
         if (data) {
           if (data.transactions) setTransactions(data.transactions);
-          else setTransactions([]); // Novo usuário limpa dados antigos da memória
+          else setTransactions([]); 
           
           if (data.bills) setBills(data.bills);
           else setBills([]);
 
           if (data.categories) setCategories(data.categories);
+
+          if (data.shiftState) setShiftState(data.shiftState);
         } else {
-          // Usuário novo, zera tudo para não mostrar dados de cache
           setTransactions([]);
           setBills([]);
         }
         setIsLoadingData(false);
-      });
-    }
+        setAuthLoading(false);
+      }
+    };
+
+    initUserData();
   }, [user]);
 
-  // 3. Salvar dados quando mudam (apenas se logado e não estiver carregando)
+  // 3. Salvar dados quando mudam
   useEffect(() => {
-    if (!user || isLoadingData) return;
+    if (!user || isLoadingData || subscriptionStatus !== 'active') return;
     
-    const payload = { transactions, bills, categories };
+    const payload = { transactions, bills, categories, shiftState };
     saveAppData(payload, user.uid).catch((error) => {
       console.error("Erro ao salvar dados no Firestore:", error);
     });
-  }, [transactions, bills, categories, user, isLoadingData]);
+  }, [transactions, bills, categories, shiftState, user, isLoadingData, subscriptionStatus]);
 
   // Timer do Turno
   useEffect(() => {
@@ -432,12 +467,14 @@ function App() {
     const newTransactions = [incomeTransaction, ...expenseTransactions, ...transactions];
     setTransactions(newTransactions);
     
-    // Força salvamento imediato
+    // Reseta o estado do turno (inativo)
+    const resetShiftState = { isActive: false, isPaused: false, startTime: null, elapsedSeconds: 0, earnings: { uber: 0, n99: 0, indrive: 0, private: 0 }, expenses: 0, expenseList: [], km: 0 };
+    setShiftState(resetShiftState);
+
+    // Força salvamento imediato do histórico E do estado resetado
     if (user) {
-      saveAppData({ transactions: newTransactions, bills, categories }, user.uid);
+      saveAppData({ transactions: newTransactions, bills, categories, shiftState: resetShiftState }, user.uid);
     }
-    
-    setShiftState({ isActive: false, isPaused: false, startTime: null, elapsedSeconds: 0, earnings: { uber: 0, n99: 0, indrive: 0, private: 0 }, expenses: 0, expenseList: [], km: 0 });
   };
 
   const handleSaveBill = (billData: Omit<Bill, 'id'>) => {
@@ -463,6 +500,35 @@ function App() {
     return <Login />;
   }
 
+  // TELA DE BLOQUEIO POR ASSINATURA EXPIRADA
+  if (subscriptionStatus === 'expired') {
+    return (
+      <div className="h-screen flex items-center justify-center bg-slate-900 p-4">
+        <div className="bg-white rounded-2xl p-8 max-w-md w-full text-center shadow-xl animate-in zoom-in-95 duration-300">
+          <div className="w-16 h-16 bg-rose-100 rounded-full flex items-center justify-center mx-auto mb-6">
+            <Lock className="text-rose-600" size={32} />
+          </div>
+          <h1 className="text-2xl font-bold mb-4 text-slate-900">Período de teste encerrado</h1>
+          <p className="text-slate-600 mb-6">
+            Seu teste gratuito de 7 dias do FinanDrive terminou.
+            Para continuar usando todas as ferramentas profissionais de gestão, é necessário ativar sua assinatura.
+          </p>
+          <div className="bg-slate-50 p-4 rounded-xl mb-6 text-sm text-slate-500 border border-slate-100">
+            <p className="font-semibold text-slate-700 mb-1">Como desbloquear?</p>
+            Entre em contato com o suporte para reativar seu acesso imediato.
+          </div>
+          <button 
+            onClick={handleLogout}
+            className="text-slate-400 hover:text-slate-600 text-sm font-medium flex items-center justify-center gap-2 mx-auto"
+          >
+            <LogOut size={16} /> Sair da conta
+          </button>
+        </div>
+      </div>
+    );
+  }
+
+  // APP NORMAL (Trial Ativo ou Pago)
   return (
     <div className="h-screen bg-slate-100 flex flex-col md:flex-row font-sans text-slate-900 overflow-hidden">
       {/* Mobile Header */}
