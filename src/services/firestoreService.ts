@@ -1,7 +1,7 @@
-import { Transaction, Bill, ShiftState } from '../types';
-import { initializeApp } from 'firebase/app';
-import { getFirestore, doc, getDoc, setDoc } from 'firebase/firestore';
-import { getAuth, GoogleAuthProvider, signInWithPopup, signOut } from 'firebase/auth';
+import { Transaction, Bill, ShiftState, UserSubscription } from '../types';
+import { initializeApp, getApps, getApp, FirebaseApp } from 'firebase/app';
+import { getFirestore, doc, getDoc, setDoc, Timestamp } from 'firebase/firestore';
+import { getAuth, signOut } from 'firebase/auth';
 
 const STORAGE_KEY = 'finandrive_data_v1';
 
@@ -42,7 +42,7 @@ let auth: any = null;
 
 if (firebaseConfig.apiKey && firebaseConfig.projectId) {
   try {
-    const app = initializeApp(firebaseConfig);
+    const app = getApps().length > 0 ? getApp() : initializeApp(firebaseConfig);
     db = getFirestore(app);
     auth = getAuth(app);
     console.log("Firebase initialized");
@@ -73,6 +73,57 @@ const cleanPayload = (obj: any): any => {
   return obj;
 };
 
+// --- Lógica de Assinatura ---
+
+export const getOrCreateUserSubscription = async (uid: string): Promise<UserSubscription | null> => {
+  if (!db) return null;
+
+  try {
+    const userRef = doc(db, 'users', uid);
+    const userSnap = await getDoc(userRef);
+
+    if (userSnap.exists()) {
+      return userSnap.data() as UserSubscription;
+    } else {
+      // Cria novo usuário com 7 dias de trial
+      const now = new Date();
+      const trialEndsDate = new Date();
+      trialEndsDate.setDate(now.getDate() + 7);
+
+      const newSub: UserSubscription = {
+        status: 'trial',
+        createdAt: Timestamp.fromDate(now),
+        trialEndsAt: Timestamp.fromDate(trialEndsDate)
+      };
+
+      await setDoc(userRef, newSub);
+      return newSub;
+    }
+  } catch (error) {
+    console.error("Erro ao gerenciar assinatura:", error);
+    return null;
+  }
+};
+
+export const checkSubscriptionStatus = (sub: UserSubscription): 'active' | 'expired' => {
+  if (sub.status === 'paid') return 'active';
+  
+  if (sub.status === 'trial') {
+    const now = new Date();
+    // Handle Timestamp conversion if necessary
+    const endDate = (sub.trialEndsAt as any).toDate ? (sub.trialEndsAt as any).toDate() : new Date(sub.trialEndsAt);
+    
+    if (now > endDate) {
+      return 'expired';
+    }
+    return 'active';
+  }
+
+  return 'expired';
+};
+
+// --- Lógica de Dados do App ---
+
 // Carrega dados específicos do usuário logado (userId)
 export const loadAppData = async (userId?: string): Promise<AppData | null> => {
   // 1. Se temos userId e banco conectado, busca na nuvem
@@ -92,7 +143,6 @@ export const loadAppData = async (userId?: string): Promise<AppData | null> => {
   }
 
   // 2. Fallback: LocalStorage (Apenas se não tiver userId ou erro)
-  // Isso serve para manter funcionamento offline se necessário, mas idealmente queremos nuvem
   return new Promise((resolve) => {
     try {
       const raw = localStorage.getItem(STORAGE_KEY);
