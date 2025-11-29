@@ -10,10 +10,15 @@ export const Login: React.FC = () => {
   const handleGoogleLogin = async () => {
     setLoading(true);
     setError('');
-    const provider = new GoogleAuthProvider();
+    
     try {
-      await signInWithPopup(auth, provider);
-      // O App.tsx vai detectar a mudança de estado automaticamente
+      if (auth) {
+        const provider = new GoogleAuthProvider();
+        await signInWithPopup(auth, provider);
+        // O App.tsx vai detectar a mudança de estado automaticamente
+      } else {
+        setError('Serviço de autenticação não disponível.');
+      }
     } catch (err: any) {
       console.error(err);
       setError('Erro ao conectar com o Google. Tente novamente.');
