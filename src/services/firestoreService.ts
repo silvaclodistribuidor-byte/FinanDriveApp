@@ -57,7 +57,6 @@ if (firebaseConfig.apiKey && firebaseConfig.projectId) {
 }
 
 // Helper: Get or create a persistent ID for this browser
-// Em um app real, isso seria substituído pelo Firebase Auth (uid)
 const getUserId = () => {
   let id = localStorage.getItem(USER_ID_KEY);
   if (!id) {
@@ -65,6 +64,21 @@ const getUserId = () => {
     localStorage.setItem(USER_ID_KEY, id);
   }
   return id;
+};
+
+// Função para limpar campos undefined (Firebase não aceita undefined)
+const cleanPayload = (obj: any): any => {
+  if (Array.isArray(obj)) {
+    return obj.map(v => cleanPayload(v));
+  } else if (obj !== null && typeof obj === 'object') {
+    return Object.entries(obj).reduce((acc, [k, v]) => {
+      if (v !== undefined) {
+        acc[k] = cleanPayload(v);
+      }
+      return acc;
+    }, {} as any);
+  }
+  return obj;
 };
 
 export const loadAppData = async (): Promise<AppData | null> => {
@@ -86,7 +100,7 @@ export const loadAppData = async (): Promise<AppData | null> => {
         if (local) {
           const data = JSON.parse(local);
           // Migrar dados locais para a nuvem
-          await setDoc(docRef, data);
+          await setDoc(docRef, cleanPayload(data));
           return data;
         }
         return null;
@@ -124,8 +138,8 @@ export const saveAppData = async (data: AppData): Promise<void> => {
   if (db) {
     try {
       const userId = getUserId();
-      // setDoc com merge:true atualiza campos sem sobrescrever documento inteiro se não precisar
-      await setDoc(doc(db, "userData", userId), data, { merge: true });
+      // IMPORTANTE: cleanPayload remove undefined que quebraria o Firebase
+      await setDoc(doc(db, "userData", userId), cleanPayload(data), { merge: true });
     } catch (e) {
       console.error("Firestore save error", e);
     }
