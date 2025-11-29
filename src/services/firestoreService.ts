@@ -1,9 +1,9 @@
 import { Transaction, Bill } from '../types';
 import { initializeApp } from 'firebase/app';
 import { getFirestore, doc, getDoc, setDoc } from 'firebase/firestore';
+import { getAuth, GoogleAuthProvider, signInWithPopup, signOut } from 'firebase/auth';
 
 const STORAGE_KEY = 'finandrive_data_v1';
-const USER_ID_KEY = 'finandrive_user_id';
 
 interface AppData {
   transactions: Transaction[];
@@ -11,14 +11,11 @@ interface AppData {
   categories: string[];
 }
 
-// Helper to safely get env vars (works in Vite/CRA/Next contexts often polyfilled)
 const getEnv = (key: string) => {
   try {
-    // Check standard process.env (Create React App / Vercel default)
     if (typeof process !== 'undefined' && process.env && process.env[key]) {
       return process.env[key];
     }
-    // Check Vite specific (if using Vite)
     // @ts-ignore
     if (typeof import.meta !== 'undefined' && import.meta.env && import.meta.env[key]) {
       // @ts-ignore
@@ -30,8 +27,6 @@ const getEnv = (key: string) => {
   return undefined;
 };
 
-// Configuração do Firebase via Variáveis de Ambiente
-// Na Vercel, configure estas chaves em Settings > Environment Variables
 const firebaseConfig = {
   apiKey: getEnv('FIREBASE_API_KEY') || getEnv('REACT_APP_FIREBASE_API_KEY') || getEnv('VITE_FIREBASE_API_KEY'),
   authDomain: getEnv('FIREBASE_AUTH_DOMAIN') || getEnv('REACT_APP_FIREBASE_AUTH_DOMAIN') || getEnv('VITE_FIREBASE_AUTH_DOMAIN'),
@@ -42,31 +37,27 @@ const firebaseConfig = {
 };
 
 let db: any = null;
+let auth: any = null;
 
-// Initialize Firebase only if config is present
 if (firebaseConfig.apiKey && firebaseConfig.projectId) {
   try {
     const app = initializeApp(firebaseConfig);
     db = getFirestore(app);
-    console.log("Firebase initialized successfully connected to", firebaseConfig.projectId);
+    auth = getAuth(app);
+    console.log("Firebase initialized");
   } catch (error) {
     console.error("Firebase initialization failed:", error);
   }
-} else {
-  console.log("Firebase config missing. Using LocalStorage only.");
 }
 
-// Helper: Get or create a persistent ID for this browser
-const getUserId = () => {
-  let id = localStorage.getItem(USER_ID_KEY);
-  if (!id) {
-    id = 'user_' + Math.random().toString(36).substr(2, 9);
-    localStorage.setItem(USER_ID_KEY, id);
-  }
-  return id;
+// Export auth para usar no Login
+export { auth };
+
+export const logoutUser = async () => {
+  if (auth) await signOut(auth);
 };
 
-// Função para limpar campos undefined (Firebase não aceita undefined)
+// Função para limpar campos undefined
 const cleanPayload = (obj: any): any => {
   if (Array.isArray(obj)) {
     return obj.map(v => cleanPayload(v));
@@ -81,36 +72,26 @@ const cleanPayload = (obj: any): any => {
   return obj;
 };
 
-export const loadAppData = async (): Promise<AppData | null> => {
-  // 1. Tentar carregar do Firestore se estiver configurado
-  if (db) {
+// Carrega dados específicos do usuário logado (userId)
+export const loadAppData = async (userId?: string): Promise<AppData | null> => {
+  // 1. Se temos userId e banco conectado, busca na nuvem
+  if (db && userId) {
     try {
-      const userId = getUserId();
       const docRef = doc(db, "userData", userId);
       const docSnap = await getDoc(docRef);
 
       if (docSnap.exists()) {
         const data = docSnap.data() as AppData;
-        // Sincronizar com local para garantir consistência
-        localStorage.setItem(STORAGE_KEY, JSON.stringify(data));
         return data;
-      } else {
-        // Se não tem no cloud, verifica se tem local para migrar
-        const local = localStorage.getItem(STORAGE_KEY);
-        if (local) {
-          const data = JSON.parse(local);
-          // Migrar dados locais para a nuvem
-          await setDoc(docRef, cleanPayload(data));
-          return data;
-        }
-        return null;
       }
+      return null; // Usuário novo, sem dados
     } catch (e) {
-      console.warn("Firestore load error (using fallback):", e);
+      console.warn("Firestore load error:", e);
     }
   }
 
-  // 2. Fallback: LocalStorage
+  // 2. Fallback: LocalStorage (Apenas se não tiver userId ou erro)
+  // Isso serve para manter funcionamento offline se necessário, mas idealmente queremos nuvem
   return new Promise((resolve) => {
     try {
       const raw = localStorage.getItem(STORAGE_KEY);
@@ -120,25 +101,23 @@ export const loadAppData = async (): Promise<AppData | null> => {
         resolve(null);
       }
     } catch (e) {
-      console.error("Error loading local data", e);
       resolve(null);
     }
   });
 };
 
-export const saveAppData = async (data: AppData): Promise<void> => {
-  // 1. Sempre salvar localmente para performance/offline
+// Salva dados no documento do usuário (userId)
+export const saveAppData = async (data: AppData, userId?: string): Promise<void> => {
+  // Sempre salva local como backup
   try {
     localStorage.setItem(STORAGE_KEY, JSON.stringify(data));
   } catch (e) {
     console.error("LocalStorage save error", e);
   }
 
-  // 2. Salvar na nuvem se disponível
-  if (db) {
+  // Salva na nuvem na pasta do usuário
+  if (db && userId) {
     try {
-      const userId = getUserId();
-      // IMPORTANTE: cleanPayload remove undefined que quebraria o Firebase
       await setDoc(doc(db, "userData", userId), cleanPayload(data), { merge: true });
     } catch (e) {
       console.error("Firestore save error", e);
