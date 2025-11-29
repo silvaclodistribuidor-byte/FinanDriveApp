@@ -37,6 +37,8 @@ import { ReportsTab } from './components/ReportsTab';
 import { loadAppData, saveAppData } from "./services/firestoreService";
 import { Transaction, TransactionType, ExpenseCategory, Bill, ShiftState, DEFAULT_CATEGORIES } from './types';
 
+// Force refresh ID: v2
+
 const getTodayString = () => {
   const now = new Date();
   return [
