@@ -1,4 +1,4 @@
-import { Transaction, Bill } from '../types';
+import { Transaction, Bill, ShiftState } from '../types';
 import { initializeApp } from 'firebase/app';
 import { getFirestore, doc, getDoc, setDoc } from 'firebase/firestore';
 import { getAuth, GoogleAuthProvider, signInWithPopup, signOut } from 'firebase/auth';
@@ -9,6 +9,7 @@ interface AppData {
   transactions: Transaction[];
   bills: Bill[];
   categories: string[];
+  shiftState?: ShiftState;
 }
 
 const getEnv = (key: string) => {
