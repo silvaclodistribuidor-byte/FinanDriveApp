@@ -12,19 +12,21 @@ export interface AppData {
   shiftState?: ShiftState;
 }
 
-// Lê variáveis de ambiente (process.env ou import.meta.env)
+// Pega variável de ambiente tanto em Vite (import.meta.env) quanto em process.env
 const getEnv = (key: string) => {
   try {
+    // Node / Vercel
     if (typeof process !== "undefined" && (process as any).env && (process as any).env[key]) {
       return (process as any).env[key];
     }
+    // Vite
     // @ts-ignore
     if (typeof import.meta !== "undefined" && (import.meta as any).env && (import.meta as any).env[key]) {
       // @ts-ignore
       return (import.meta as any).env[key];
     }
-  } catch (e) {
-    return undefined;
+  } catch {
+    // ignora
   }
   return undefined;
 };
@@ -59,20 +61,21 @@ if (firebaseConfig.apiKey && firebaseConfig.projectId) {
     app = getApps().length > 0 ? getApp() : initializeApp(firebaseConfig);
     db = getFirestore(app);
     auth = getAuth(app);
-    console.log("Firebase initialized");
+    console.log("[FinanDrive] Firebase inicializado");
   } catch (error) {
-    console.error("Firebase initialization failed:", error);
+    console.error("[FinanDrive] Falha ao inicializar Firebase:", error);
   }
+} else {
+  console.warn("[FinanDrive] Config Firebase incompleta. Usando apenas armazenamento local.");
 }
 
-// Exporta auth para o Login
 export { auth };
 
 export const logoutUser = async () => {
   if (auth) await signOut(auth);
 };
 
-// Remove campos undefined antes de salvar no Firestore
+// Remove campos undefined antes de salvar
 const cleanPayload = (obj: any): any => {
   if (Array.isArray(obj)) {
     return obj.map((v) => cleanPayload(v));
@@ -87,7 +90,7 @@ const cleanPayload = (obj: any): any => {
   return obj;
 };
 
-// -------- Assinatura (igual antes) --------
+// ---------- Assinatura (coleção USERS) ----------
 
 export const getOrCreateUserSubscription = async (
   uid: string
@@ -101,7 +104,6 @@ export const getOrCreateUserSubscription = async (
     if (userSnap.exists()) {
       return userSnap.data() as UserSubscription;
     } else {
-      // Novo usuário com 7 dias de trial
       const now = new Date();
       const trialEndsDate = new Date();
       trialEndsDate.setDate(now.getDate() + 7);
@@ -112,7 +114,7 @@ export const getOrCreateUserSubscription = async (
         trialEndsAt: Timestamp.fromDate(trialEndsDate),
       };
 
-      await setDoc(userRef, newSub);
+      await setDoc(userRef, newSub, { merge: true });
       return newSub;
     }
   } catch (error) {
@@ -131,36 +133,37 @@ export const checkSubscriptionStatus = (
     const endDate = (sub.trialEndsAt as any).toDate
       ? (sub.trialEndsAt as any).toDate()
       : new Date(sub.trialEndsAt);
-
-    if (now > endDate) {
-      return "expired";
-    }
-    return "active";
+    return now > endDate ? "expired" : "active";
   }
 
   return "expired";
 };
 
-// -------- Dados do app (onde estava o problema) --------
+// ---------- Dados do APP (coleção USERDATA) ----------
 
 const getDefaultAppData = (): AppData => ({
   transactions: [],
   bills: [],
-  categories: ["Combustível", "Alimentação", "Manutenção", "Outros"],
-  // shiftState fica opcional; se quisermos persistir depois é só usar
+  categories: [
+    "Combustível",
+    "Alimentação",
+    "Manutenção",
+    "Seguro/Impostos",
+    "Limpeza",
+    "Internet/Celular",
+    "Outros",
+  ],
 });
 
-// Carrega dados do usuário (PC, celular, etc.)
+// Carrega dados do usuário (prioriza Firestore, senão localStorage, senão defaults)
 export const loadAppData = async (userId?: string): Promise<AppData> => {
   const defaults = getDefaultAppData();
 
-  // Se não temos usuário logado ou Firestore, tenta só o backup local
+  // Sem usuário logado ou sem db → só localStorage
   if (!userId || !db) {
     try {
       const raw = localStorage.getItem(STORAGE_KEY);
-      if (raw) {
-        return JSON.parse(raw) as AppData;
-      }
+      if (raw) return JSON.parse(raw) as AppData;
     } catch (e) {
       console.warn("LocalStorage load error:", e);
     }
@@ -183,33 +186,31 @@ export const loadAppData = async (userId?: string): Promise<AppData> => {
         shiftState: raw.shiftState,
       };
 
-      // Atualiza backup local com o que veio da nuvem
+      // Atualiza backup local
       try {
         localStorage.setItem(STORAGE_KEY, JSON.stringify(merged));
       } catch (e) {
-        console.warn("LocalStorage save backup error:", e);
+        console.warn("LocalStorage backup save error:", e);
       }
 
       return merged;
-    } else {
-      // Usuário novo: cria documento vazio com defaults
-      await setDoc(ref, cleanPayload(defaults), { merge: true });
-      try {
-        localStorage.setItem(STORAGE_KEY, JSON.stringify(defaults));
-      } catch (e) {
-        console.warn("LocalStorage save backup error:", e);
-      }
-      return defaults;
     }
+
+    // Doc ainda não existe no Firestore → tenta local
+    try {
+      const raw = localStorage.getItem(STORAGE_KEY);
+      if (raw) return JSON.parse(raw) as AppData;
+    } catch (e) {
+      console.warn("LocalStorage load error:", e);
+    }
+
+    return defaults;
   } catch (e) {
     console.error("Firestore load error:", e);
 
-    // Se der erro no Firestore, tenta último backup local
     try {
       const raw = localStorage.getItem(STORAGE_KEY);
-      if (raw) {
-        return JSON.parse(raw) as AppData;
-      }
+      if (raw) return JSON.parse(raw) as AppData;
     } catch {
       // ignora
     }
@@ -218,26 +219,40 @@ export const loadAppData = async (userId?: string): Promise<AppData> => {
   }
 };
 
-// Salva dados no Firestore + backup local
+// Salva dados do app (sempre local; nuvem só se tiver coisa pra salvar)
 export const saveAppData = async (
   data: AppData,
   userId?: string
 ): Promise<void> => {
-  // Sempre salva local como backup
+  // Sempre salva backup local
   try {
     localStorage.setItem(STORAGE_KEY, JSON.stringify(data));
   } catch (e) {
     console.error("LocalStorage save error", e);
   }
 
-  // Salva na nuvem se tiver user + db
-  if (db && userId) {
-    try {
-      await setDoc(doc(db, "userData", userId), cleanPayload(data), {
-        merge: true,
-      });
-    } catch (e) {
-      console.error("Firestore save error", e);
-    }
+  if (!db || !userId) return;
+
+  const isEmptySnapshot =
+    (!data.transactions || data.transactions.length === 0) &&
+    (!data.bills || data.bills.length === 0);
+
+  // ⚠️ Proteção: não sobrescrever Firestore com tudo vazio
+  if (isEmptySnapshot) {
+    console.log(
+      "[FinanDrive] Snapshot vazio detectado. Não sobrescrevendo dados no Firestore."
+    );
+    return;
+  }
+
+  try {
+    await setDoc(
+      doc(db, "userData", userId),
+      cleanPayload(data),
+      { merge: true }
+    );
+  } catch (e) {
+    console.error("Firestore save error", e);
   }
 };
+
