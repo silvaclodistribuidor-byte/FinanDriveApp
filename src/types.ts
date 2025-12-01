@@ -36,6 +36,14 @@ export interface ShiftState {
     indrive: number;
     private: number;
   };
+  /**
+   * Último saldo informado em cada app (Uber/99/InDrive/Particular),
+   * usado para calcular a diferença no modo de atualização inteligente.
+   */
+  lastUberBalance: number;
+  lastN99Balance: number;
+  lastIndriveBalance: number;
+  lastPrivateBalance: number;
   expenses: number;
   expenseList: Array<{
     amount: number;
