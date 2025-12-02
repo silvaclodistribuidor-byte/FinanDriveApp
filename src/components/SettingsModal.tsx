@@ -94,7 +94,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
             <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
               <div>
                 <label className="block text-xs font-bold text-slate-500 uppercase mb-1">
-                  Meta de Faturamento (Bruto)
+                  Faturamento Mensal Alvo
                 </label>
                 <div className="relative">
                   <DollarSign className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" size={16} />
@@ -102,11 +102,13 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                     type="number"
                     value={salaryInput}
                     onChange={e => setSalaryInput(e.target.value)}
-                    placeholder="Ex: 3000"
+                    placeholder="Ex: 13000"
                     className="w-full pl-9 pr-3 py-2.5 bg-white border border-slate-200 rounded-lg focus:ring-2 focus:ring-indigo-500 outline-none text-slate-800 font-bold"
                   />
                 </div>
-                <p className="text-[10px] text-slate-400 mt-1">Total que você quer faturar no mês (já incluindo o valor das contas).</p>
+                <p className="text-[10px] text-slate-500 mt-1 leading-tight">
+                  Valor TOTAL que você quer girar no mês (já incluindo o pagamento das contas).
+                </p>
               </div>
 
               <div>
@@ -124,7 +126,9 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                     className="w-full pl-9 pr-3 py-2.5 bg-white border border-slate-200 rounded-lg focus:ring-2 focus:ring-indigo-500 outline-none text-slate-800 font-bold"
                   />
                 </div>
-                <p className="text-[10px] text-slate-400 mt-1">Usado para calcular a meta diária.</p>
+                <p className="text-[10px] text-slate-500 mt-1 leading-tight">
+                  A meta diária será calculada dividindo o faturamento por esses dias.
+                </p>
               </div>
             </div>
           </section>
