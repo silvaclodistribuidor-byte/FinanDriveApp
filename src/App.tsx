@@ -25,10 +25,10 @@ import {
   ChevronRight,
   ArrowDownCircle,
   ArrowUpCircle,
-  CheckCircle2,
-  AlertCircle,
+  Lock,
   LogOut,
-  Lock
+  CheckCircle2,
+  AlertCircle
 } from 'lucide-react';
 import { PieChart, Pie, Cell, Tooltip, ResponsiveContainer, Legend } from 'recharts';
 import { StatCard } from './components/StatCard';
@@ -39,9 +39,17 @@ import { BillModal } from './components/BillModal';
 import { SettingsModal } from './components/SettingsModal';
 import { ReportsTab } from './components/ReportsTab';
 import { Login } from './components/Login';
-import { loadAppData, saveAppData, auth, logoutUser, getOrCreateUserSubscription, checkSubscriptionStatus } from "./services/firestoreService";
+import { 
+  loadAppData, 
+  saveAppData, 
+  auth, 
+  logoutUser, 
+  getOrCreateUserSubscription, 
+  checkSubscriptionStatus,
+  onAuthStateChanged
+} from "./services/firestoreService";
 import { Transaction, TransactionType, ExpenseCategory, Bill, ShiftState, DEFAULT_CATEGORIES } from './types';
-import firebase from 'firebase/compat/app';
+import type { User } from 'firebase/auth';
 
 const getTodayString = () => {
   const now = new Date();
@@ -92,7 +100,7 @@ const INITIAL_BILLS: Bill[] = [];
 type SubscriptionStatus = 'loading' | 'active' | 'expired';
 
 function App() {
-  const [user, setUser] = useState<firebase.User | null>(null);
+  const [user, setUser] = useState<User | null>(null);
   const [authLoading, setAuthLoading] = useState(true);
   const [subscriptionStatus, setSubscriptionStatus] = useState<SubscriptionStatus>('loading');
 
@@ -140,13 +148,9 @@ function App() {
 
   const timerRef = useRef<number | null>(null);
 
-  // 1. Monitorar Autenticação
+  // 1. Monitorar Autenticação (Sintaxe Modular v9)
   useEffect(() => {
-    if(!auth) {
-      setAuthLoading(false);
-      return;
-    }
-    const unsubscribe = auth.onAuthStateChanged((currentUser) => {
+    const unsubscribe = onAuthStateChanged(auth, (currentUser) => {
       setUser(currentUser);
       if (!currentUser) {
         setAuthLoading(false);
@@ -208,11 +212,12 @@ function App() {
       transactions, 
       bills, 
       categories, 
-      // Não incluímos shiftState aqui pois ele muda a cada segundo
+      // IMPORTANTE: Não incluímos shiftState aqui pois ele muda a cada segundo
       monthlySalaryGoal,
       monthlyWorkingDays
     };
     
+    // Payload parcial, shiftState no banco será preservado pelo merge:true
     saveAppData(payload as any, user.uid).catch((error) => {
       console.error("Erro ao salvar dados no Firestore:", error);
     });
@@ -374,7 +379,7 @@ function App() {
 
   // --- Calculations ---
   
-  // 1. Metas Diárias
+  // 1. Metas Diárias - LÓGICA ATUALIZADA
   const goals = useMemo(() => {
     const now = new Date();
     const currentMonthStr = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}`;
@@ -385,14 +390,24 @@ function App() {
     // Evita divisão por zero
     const workingDays = monthlyWorkingDays > 0 ? monthlyWorkingDays : 26;
     
+    // Meta de Contas Diária (Necessidade mínima)
     const dailyBillsGoal = totalMonthlyBills / workingDays;
-    const dailySalaryGoal = monthlySalaryGoal / workingDays;
-    const dailyTotalGoal = dailyBillsGoal + dailySalaryGoal;
+    
+    // Meta de Faturamento Bruto (baseado no input do usuário)
+    const dailyGrossGoalInput = monthlySalaryGoal / workingDays;
+
+    // A meta do dia é o que o usuário definiu como faturamento, a menos que as contas sejam maiores que isso.
+    // Ex: Quer ganhar 500 (bruto). Contas dão 200. Meta = 500. (Lucro será 300).
+    // Ex: Quer ganhar 500 (bruto). Contas dão 600. Meta = 600. (Lucro será 0, apenas paga contas).
+    const dailyTotalGoal = Math.max(dailyGrossGoalInput, dailyBillsGoal);
+    
+    // O Lucro Projetado é o que sobra da meta total depois de pagar as contas
+    const dailyProjectedProfit = Math.max(0, dailyTotalGoal - dailyBillsGoal);
 
     return {
-      dailyBillsGoal,
-      dailySalaryGoal,
-      dailyTotalGoal,
+      dailyBillsGoal,      // Quanto precisa pra pagar contas
+      dailyProjectedProfit, // Quanto sobra pro motorista (Salário Líquido Diário)
+      dailyTotalGoal,      // O alvo do dia (Bruto)
       hasGoals: dailyTotalGoal > 0,
       hasBills: totalMonthlyBills > 0
     };
@@ -422,10 +437,10 @@ function App() {
     let goalExplanation = "";
     if (goals.hasGoals) {
       if (netToday < goals.dailyBillsGoal) goalExplanation = "Você ainda não cobriu o valor das contas de hoje.";
-      else if (netToday < goals.dailyTotalGoal) goalExplanation = "Contas do dia cobertas. Busque a meta de salário!";
-      else goalExplanation = "Meta total (contas + salário) batida hoje. Excelente!";
+      else if (netToday < goals.dailyTotalGoal) goalExplanation = "Contas pagas. Busque sua meta de faturamento!";
+      else goalExplanation = "Meta batida hoje! Excelente.";
     } else if (goals.hasBills) {
-      goalExplanation = "Defina sua meta de salário nas Configurações.";
+      goalExplanation = "Defina sua meta de faturamento nas Configurações.";
     } else {
       goalExplanation = "Sem contas pendentes e sem meta definida.";
     }
@@ -511,7 +526,7 @@ function App() {
   const getShiftGoalText = () => {
     switch (shiftGoalStatus) {
       case 'belowBills': return 'Abaixo da meta de contas.';
-      case 'between': return 'Contas pagas. Buscando salário.';
+      case 'between': return 'Contas pagas. Buscando meta bruta.';
       case 'aboveSalary': return 'Meta total batida!';
       default: return 'Defina suas metas.';
     }
@@ -607,11 +622,21 @@ function App() {
       {activeTab !== 'shift' && (
         <div className="md:hidden bg-slate-900 shadow-md p-4 flex justify-between items-center z-30 shrink-0">
           <div className="flex items-center justify-center w-full relative">
-            <button onClick={() => setMobileMenuOpen(!mobileMenuOpen)} className="absolute left-0 text-slate-300">
+            <button
+              onClick={() => setMobileMenuOpen(!mobileMenuOpen)}
+              className="absolute left-0 text-slate-300"
+            >
               {mobileMenuOpen ? <CloseIcon /> : <Menu />}
             </button>
-            <span className="font-bold text-lg text-white tracking-tight">FinanDrive</span>
-            <button onClick={() => setShowValues(!showValues)} className="absolute right-0 text-slate-400">
+
+            <span className="font-bold text-lg text-white tracking-tight">
+              FinanDrive
+            </span>
+
+            <button
+              onClick={() => setShowValues(!showValues)}
+              className="absolute right-0 text-slate-400"
+            >
               {showValues ? <Eye size={22} /> : <EyeOff size={22} />}
             </button>
           </div>
@@ -619,324 +644,723 @@ function App() {
       )}
 
       {/* Sidebar */}
-      <aside className={`fixed inset-y-0 left-0 z-40 w-64 bg-slate-900 text-slate-300 transform transition-transform duration-300 ease-in-out md:relative md:translate-x-0 shrink-0 ${mobileMenuOpen ? 'translate-x-0' : '-translate-x-full'} ${activeTab === 'shift' ? 'md:w-20 lg:w-64' : ''}`}>
-        <div className="p-6 hidden md:flex flex-col justify-center items-center border-b border-slate-800 h-24">
-          <span className={`font-extrabold text-2xl tracking-tight text-white ${activeTab === 'shift' ? 'md:hidden lg:block' : ''}`}>FinanDrive</span>
-          {user.email && <span className="text-[10px] text-slate-500 mt-1 truncate max-w-full">{user.email}</span>}
-          {activeTab === 'shift' && <span className="hidden md:block lg:hidden font-bold text-white text-xl">FD</span>}
+      <aside
+        className={`
+        fixed inset-y-0 left-0 z-40 w-64 bg-slate-900 text-slate-300 transform transition-transform duration-300 ease-in-out
+        md:relative md:translate-x-0 shrink-0
+        ${mobileMenuOpen ? 'translate-x-0' : '-translate-x-full'}
+        ${activeTab === 'shift' ? 'md:w-20 lg:w-64' : ''} 
+      `}
+      >
+        <div className="p-6 hidden md:flex justify-center items-center border-b border-slate-800 h-20">
+          <span
+            className={`font-extrabold text-2xl tracking-tight text-white ${
+              activeTab === 'shift' ? 'md:hidden lg:block' : ''
+            }`}
+          >
+            FinanDrive
+          </span>
+          {activeTab === 'shift' && (
+            <span className="hidden md:block lg:hidden font-bold text-white text-xl">
+              FD
+            </span>
+          )}
         </div>
-        <nav className="p-4 space-y-2 mt-4 flex flex-col h-[calc(100%-8rem)]">
-          <button onClick={() => { setActiveTab('dashboard'); setMobileMenuOpen(false); }} className={`w-full flex items-center gap-3 px-4 py-3 rounded-xl transition-all font-medium ${activeTab === 'dashboard' ? 'bg-indigo-600 text-white shadow-lg shadow-indigo-900/20' : 'hover:bg-slate-800 hover:text-white'}`}>
-            <LayoutDashboard size={20} /><span className={`${activeTab === 'shift' ? 'md:hidden lg:inline' : ''}`}>Visão Geral</span>
+
+        <nav className="p-4 space-y-2 mt-4 flex flex-col h-[calc(100%-6rem)]">
+          <button
+            onClick={() => {
+              setActiveTab('dashboard');
+              setMobileMenuOpen(false);
+            }}
+            className={`w-full flex items-center gap-3 px-4 py-3 rounded-xl transition-all font-medium ${
+              activeTab === 'dashboard'
+                ? 'bg-indigo-600 text-white shadow-lg shadow-indigo-900/20'
+                : 'hover:bg-slate-800 hover:text-white'
+            }`}
+          >
+            <LayoutDashboard size={20} />
+            <span className={`${activeTab === 'shift' ? 'md:hidden lg:inline' : ''}`}>
+              Visão Geral
+            </span>
           </button>
-          <button onClick={() => { setActiveTab('shift'); setMobileMenuOpen(false); }} className={`w-full flex items-center gap-3 px-4 py-3 rounded-xl transition-all font-medium ${activeTab === 'shift' ? 'bg-indigo-600 text-white shadow-lg shadow-indigo-900/20' : 'hover:bg-slate-800 hover:text-white'}`}>
-            <Play size={20} /><span className={`${activeTab === 'shift' ? 'md:hidden lg:inline' : ''}`}>Turno</span>
+          <button
+            onClick={() => {
+              setActiveTab('shift');
+              setMobileMenuOpen(false);
+            }}
+            className={`w-full flex items-center gap-3 px-4 py-3 rounded-xl transition-all font-medium ${
+              activeTab === 'shift'
+                ? 'bg-indigo-600 text-white shadow-lg shadow-indigo-900/20'
+                : 'hover:bg-slate-800 hover:text-white'
+            }`}
+          >
+            <Play size={20} />
+            <span className={`${activeTab === 'shift' ? 'md:hidden lg:inline' : ''}`}>
+              Turno
+            </span>
           </button>
-          <button onClick={() => { setActiveTab('reports'); setMobileMenuOpen(false); }} className={`w-full flex items-center gap-3 px-4 py-3 rounded-xl transition-all font-medium ${activeTab === 'reports' ? 'bg-indigo-600 text-white shadow-lg shadow-indigo-900/20' : 'hover:bg-slate-800 hover:text-white'}`}>
-            <PieChartIcon size={20} /><span className={`${activeTab === 'shift' ? 'md:hidden lg:inline' : ''}`}>Relatórios</span>
+          <button
+            onClick={() => {
+              setActiveTab('reports');
+              setMobileMenuOpen(false);
+            }}
+            className={`w-full flex items-center gap-3 px-4 py-3 rounded-xl transition-all font-medium ${
+              activeTab === 'reports'
+                ? 'bg-indigo-600 text-white shadow-lg shadow-indigo-900/20'
+                : 'hover:bg-slate-800 hover:text-white'
+            }`}
+          >
+            <PieChartIcon size={20} />
+            <span className={`${activeTab === 'shift' ? 'md:hidden lg:inline' : ''}`}>
+              Relatórios
+            </span>
           </button>
-          <button onClick={() => { setActiveTab('bills'); setMobileMenuOpen(false); }} className={`w-full flex items-center gap-3 px-4 py-3 rounded-xl transition-all font-medium ${activeTab === 'bills' ? 'bg-indigo-600 text-white shadow-lg shadow-indigo-900/20' : 'hover:bg-slate-800 hover:text-white'}`}>
-            <CalendarClock size={20} /><span className={`${activeTab === 'shift' ? 'md:hidden lg:inline' : ''}`}>Contas</span>
+          <button
+            onClick={() => {
+              setActiveTab('bills');
+              setMobileMenuOpen(false);
+            }}
+            className={`w-full flex items-center gap-3 px-4 py-3 rounded-xl transition-all font-medium ${
+              activeTab === 'bills'
+                ? 'bg-indigo-600 text-white shadow-lg shadow-indigo-900/20'
+                : 'hover:bg-slate-800 hover:text-white'
+            }`}
+          >
+            <CalendarClock size={20} />
+            <span className={`${activeTab === 'shift' ? 'md:hidden lg:inline' : ''}`}>
+              Contas
+            </span>
           </button>
-          <button onClick={() => { setActiveTab('history'); setMobileMenuOpen(false); }} className={`w-full flex items-center gap-3 px-4 py-3 rounded-xl transition-all font-medium ${activeTab === 'history' ? 'bg-indigo-600 text-white shadow-lg shadow-indigo-900/20' : 'hover:bg-slate-800 hover:text-white'}`}>
-            <History size={20} /><span className={`${activeTab === 'shift' ? 'md:hidden lg:inline' : ''}`}>Histórico</span>
+          <button
+            onClick={() => {
+              setActiveTab('history');
+              setMobileMenuOpen(false);
+            }}
+            className={`w-full flex items-center gap-3 px-4 py-3 rounded-xl transition-all font-medium ${
+              activeTab === 'history'
+                ? 'bg-indigo-600 text-white shadow-lg shadow-indigo-900/20'
+                : 'hover:bg-slate-800 hover:text-white'
+            }`}
+          >
+            <History size={20} />
+            <span className={`${activeTab === 'shift' ? 'md:hidden lg:inline' : ''}`}>
+              Histórico
+            </span>
           </button>
-          <div className="mt-auto space-y-2">
-            <button onClick={() => { setIsSettingsModalOpen(true); setMobileMenuOpen(false); }} className={`w-full flex items-center gap-3 px-4 py-3 rounded-xl transition-all font-medium hover:bg-slate-800 hover:text-white text-slate-300`}>
-              <Settings size={20} /><span className={`${activeTab === 'shift' ? 'md:hidden lg:inline' : ''}`}>Configurações</span>
+
+          <div className="mt-auto">
+            <button
+              onClick={() => {
+                setIsSettingsModalOpen(true);
+                setMobileMenuOpen(false);
+              }}
+              className={`w-full flex items-center gap-3 px-4 py-3 rounded-xl transition-all font-medium hover:bg-slate-800 hover:text-white text-slate-300`}
+            >
+              <Settings size={20} />
+              <span className={`${activeTab === 'shift' ? 'md:hidden lg:inline' : ''}`}>
+                Configurações
+              </span>
             </button>
-            <button onClick={handleLogout} className={`w-full flex items-center gap-3 px-4 py-3 rounded-xl transition-all font-medium hover:bg-rose-900/30 hover:text-rose-400 text-slate-400`}>
-              <LogOut size={20} /><span className={`${activeTab === 'shift' ? 'md:hidden lg:inline' : ''}`}>Sair</span>
+            <button
+              onClick={handleLogout}
+              className={`w-full flex items-center gap-3 px-4 py-3 rounded-xl transition-all font-medium hover:bg-rose-900/50 hover:text-rose-200 text-slate-400 mt-2`}
+            >
+              <LogOut size={20} />
+              <span className={`${activeTab === 'shift' ? 'md:hidden lg:inline' : ''}`}>
+                Sair
+              </span>
             </button>
           </div>
         </nav>
       </aside>
 
       <main className={`flex-1 overflow-y-auto h-full ${activeTab === 'shift' ? 'bg-slate-950' : 'p-4 md:p-8'}`}>
-        
+        {/* Main Header (Hidden on Shift Tab) */}
+        {activeTab !== 'shift' && (
+          <div className="flex flex-col md:flex-row justify-between items-start md:items-center mb-8 gap-4">
+            <div className="flex items-center gap-4">
+              <div>
+                <h1 className="text-2xl font-bold text-slate-800">
+                  {activeTab === 'dashboard'
+                    ? 'Painel de Controle'
+                    : activeTab === 'reports'
+                    ? 'Relatórios de Ganhos'
+                    : activeTab === 'bills'
+                    ? 'Contas & Planejamento'
+                    : 'Histórico Completo'}
+                </h1>
+                <p className="text-slate-500 text-sm flex items-center gap-1">
+                  {activeTab === 'dashboard' && stats.pendingBillsTotal > 0 ? (
+                    <span className="text-rose-500 font-medium">
+                      Você tem {formatCurrency(stats.pendingBillsTotal)} em contas pendentes.
+                    </span>
+                  ) : (
+                    <span>Gestão profissional para motoristas.</span>
+                  )}
+                </p>
+              </div>
+
+              <button
+                onClick={() => setShowValues(!showValues)}
+                className="hidden md:flex p-2 text-slate-400 hover:text-indigo-600 bg-white hover:bg-slate-50 rounded-lg border border-slate-200 transition-colors"
+                title={showValues ? 'Ocultar Valores' : 'Mostrar Valores'}
+              >
+                {showValues ? <Eye size={20} /> : <EyeOff size={20} />}
+              </button>
+            </div>
+            {/* Botões removidos conforme solicitado, acessíveis apenas pelo menu ou contexto específico */}
+          </div>
+        )}
+
         {/* --- ABA TURNO --- */}
-        {activeTab === 'shift' ? (
+        {activeTab === 'shift' && (
           <div className="h-full flex flex-col p-3 md:p-6 max-w-7xl mx-auto overflow-hidden">
+            {/* Shift Header */}
             <div className="flex justify-between items-center mb-3 shrink-0">
               <div className="flex items-center gap-3">
-                <button onClick={() => setMobileMenuOpen(true)} className="md:hidden text-slate-400 p-2 bg-slate-900 rounded-lg"><Menu size={24} /></button>
+                <button
+                  onClick={() => setMobileMenuOpen(true)}
+                  className="md:hidden text-slate-400 p-2 bg-slate-900 rounded-lg"
+                >
+                  <Menu size={24} />
+                </button>
                 <div>
                   <div className="text-slate-400 text-[10px] uppercase tracking-widest font-bold mb-0.5">Status</div>
-                  <div className={`flex items-center gap-2 text-sm md:text-base font-bold ${shiftState.isActive ? shiftState.isPaused ? 'text-yellow-400' : 'text-emerald-400 animate-pulse' : 'text-rose-400'}`}>
-                    <div className={`w-2 h-2 rounded-full ${shiftState.isActive ? shiftState.isPaused ? 'bg-yellow-400' : 'bg-emerald-400' : 'bg-rose-400'}`}></div>
-                    {shiftState.isActive ? shiftState.isPaused ? 'PAUSADO' : 'ONLINE' : 'OFFLINE'}
+                  <div className={`flex items-center gap-2 text-sm md:text-base font-bold ${
+                    shiftState.isActive ? (shiftState.isPaused ? 'text-yellow-400' : 'text-emerald-400 animate-pulse') : 'text-rose-400'
+                  }`}>
+                    <div className={`w-2 h-2 rounded-full ${
+                      shiftState.isActive ? (shiftState.isPaused ? 'bg-yellow-400' : 'bg-emerald-400') : 'bg-rose-400'
+                    }`}></div>
+                    {shiftState.isActive ? (shiftState.isPaused ? 'PAUSADO' : 'ONLINE') : 'OFFLINE'}
                   </div>
                 </div>
               </div>
               <div className="flex items-center gap-4 text-right">
-                <button onClick={() => setShowValues(!showValues)} className="text-slate-500 hover:text-slate-300">{showValues ? <Eye size={20} /> : <EyeOff size={20} />}</button>
+                <button onClick={() => setShowValues(!showValues)} className="text-slate-500 hover:text-slate-300">
+                  {showValues ? <Eye size={20} /> : <EyeOff size={20} />}
+                </button>
                 <div>
                   <div className="text-slate-400 text-[10px] uppercase tracking-widest font-bold mb-0.5">Hoje</div>
-                  <div className="text-white text-sm font-medium">{new Date().toLocaleDateString('pt-BR', { day: '2-digit', month: 'short' })}</div>
-                </div>
-              </div>
-            </div>
-
-            {/* Grid de Informações (3 Cards) */}
-            <div className="grid grid-cols-2 lg:grid-cols-4 gap-2 mb-3 shrink-0">
-              {/* Tempo */}
-              <div className="bg-slate-900/80 rounded-xl p-3 border border-slate-800 shadow-lg flex flex-col justify-center items-center relative group">
-                <div className="text-slate-500 text-[10px] font-bold uppercase tracking-wider mb-1 flex items-center gap-2"><Clock size={10} /> Tempo</div>
-                <div className="text-2xl lg:text-3xl font-mono font-bold text-white tracking-tighter">
-                  {formatTime(shiftState.elapsedSeconds).split(' ')[0]}
-                  <span className="text-sm lg:text-base text-slate-500 ml-1">{formatTime(shiftState.elapsedSeconds).split(' ').slice(1).join(' ')}</span>
-                </div>
-                {shiftState.isActive && <button onClick={handleEditStartTime} className="absolute top-1 right-1 p-1.5 text-white bg-indigo-600 hover:bg-indigo-500 rounded-lg shadow-md transition-colors z-20 border border-white/20"><Edit2 size={12} /></button>}
-              </div>
-              
-              {/* Líquido */}
-              <div className="bg-gradient-to-br from-emerald-900 to-slate-900 rounded-xl p-3 border border-emerald-800/30 shadow-lg flex flex-col justify-center items-center relative overflow-hidden">
-                <div className="text-emerald-400/80 text-[10px] font-bold uppercase tracking-wider mb-1 flex items-center gap-2"><Wallet size={10} /> Líquido</div>
-                <div className="text-2xl lg:text-3xl font-bold text-emerald-400 tracking-tight">{formatCurrency(currentShiftLiquid)}</div>
-              </div>
-
-              {/* Novo Card: Meta do Turno */}
-              <div className={`col-span-2 rounded-xl p-3 border shadow-lg flex flex-col justify-between relative overflow-hidden ${getShiftGoalColor()}`}>
-                <div className="flex justify-between items-start">
-                  <div className="text-[10px] font-bold uppercase tracking-wider flex items-center gap-2 opacity-80"><Target size={12} /> Meta Turno</div>
-                  <div className="text-xs font-bold opacity-90">{getShiftGoalText()}</div>
-                </div>
-                
-                <div className="flex items-end justify-between mt-1">
-                  <div>
-                    <div className="text-[10px] opacity-70">Contas: {formatCurrency(goals.dailyBillsGoal, true)}</div>
-                    <div className="text-[10px] opacity-70">Salário: {formatCurrency(goals.dailySalaryGoal, true)}</div>
-                  </div>
-                  <div className="text-2xl lg:text-3xl font-bold tracking-tight">
-                    {formatCurrency(goals.dailyTotalGoal, true)}
+                  <div className="text-white text-sm font-medium">
+                    {new Date().toLocaleDateString('pt-BR', { day: '2-digit', month: 'short' })}
                   </div>
                 </div>
               </div>
             </div>
 
-            {/* Botões de Entrada */}
+            {/* Shift Main Cards */}
+            <div className="grid grid-cols-2 md:grid-cols-4 gap-2 mb-3 shrink-0">
+              {/* Card Tempo */}
+              <div className="bg-slate-900/80 rounded-xl p-3 border border-slate-800 shadow-lg col-span-2 md:col-span-1 flex flex-col justify-center items-center relative group">
+                <button 
+                  onClick={handleEditStartTime}
+                  disabled={!shiftState.isActive}
+                  className="absolute top-2 right-2 p-1.5 bg-indigo-600 text-white rounded-full opacity-0 group-hover:opacity-100 transition-opacity disabled:hidden hover:bg-indigo-500"
+                  title="Ajustar Horário de Início"
+                >
+                   <Edit2 size={12} />
+                </button>
+                <div className="text-slate-500 text-[10px] font-bold uppercase tracking-wider mb-1 flex items-center gap-2">
+                  <Clock size={10} /> Tempo
+                </div>
+                <div className="text-3xl font-mono font-bold text-white tracking-tighter">
+                   {formatTime(shiftState.elapsedSeconds).split(' ')[0]}
+                   <span className="text-base text-slate-500 ml-1">
+                     {formatTime(shiftState.elapsedSeconds).split(' ')[1]}
+                   </span>
+                </div>
+              </div>
+
+              {/* Card Líquido */}
+              <div className="bg-gradient-to-br from-emerald-900 to-slate-900 rounded-xl p-3 border border-emerald-800/30 shadow-lg col-span-2 md:col-span-2 flex flex-col justify-center items-center relative overflow-hidden">
+                <div className="text-emerald-400/80 text-[10px] font-bold uppercase tracking-wider mb-1 flex items-center gap-2">
+                  <Wallet size={10} /> Líquido
+                </div>
+                <div className="text-4xl font-bold text-emerald-400 tracking-tight">
+                  {formatCurrency(currentShiftLiquid)}
+                </div>
+              </div>
+
+               {/* Card Meta do Turno */}
+               <div className={`${getShiftGoalColor()} rounded-xl p-3 border shadow-lg col-span-2 md:col-span-1 flex flex-col justify-center items-center relative overflow-hidden`}>
+                <div className="opacity-80 text-[10px] font-bold uppercase tracking-wider mb-1 flex items-center gap-2">
+                  <Target size={10} /> Meta Dia
+                </div>
+                <div className="text-2xl font-bold tracking-tight mb-0.5">
+                  {formatCurrency(goals.dailyTotalGoal)}
+                </div>
+                <div className="text-[10px] opacity-70 text-center leading-tight px-2">
+                   {getShiftGoalText()}
+                </div>
+              </div>
+            </div>
+
+            {/* Shift Action Buttons (Apps) */}
             <div className="flex-1 grid grid-cols-2 md:grid-cols-3 lg:grid-cols-6 gap-2 mb-2 overflow-y-auto content-start">
-              <button onClick={() => handleOpenEntry('uber')} disabled={!shiftState.isActive || shiftState.isPaused} className="bg-black hover:bg-slate-900 border border-slate-800 rounded-xl p-3 h-20 flex flex-col justify-between transition-all active:scale-95 disabled:opacity-40"><div className="flex justify-between w-full items-start"><div className="bg-slate-800 p-1.5 rounded-lg text-white font-bold text-xs">U</div><div className="text-slate-400 text-[10px] uppercase font-bold">Uber</div></div><div className="text-white font-bold text-lg text-right">{formatCurrency(shiftState.earnings.uber)}</div></button>
-              <button onClick={() => handleOpenEntry('99')} disabled={!shiftState.isActive || shiftState.isPaused} className="bg-yellow-400 hover:bg-yellow-300 border border-yellow-500 rounded-xl p-3 h-20 flex flex-col justify-between transition-all active:scale-95 disabled:opacity-40"><div className="flex justify-between w-full items-start"><div className="bg-black/10 p-1.5 rounded-lg text-black font-bold text-xs">99</div><div className="text-black/60 text-[10px] uppercase font-bold">99Pop</div></div><div className="text-black font-bold text-lg text-right">{formatCurrency(shiftState.earnings.n99)}</div></button>
-              <button onClick={() => handleOpenEntry('indrive')} disabled={!shiftState.isActive || shiftState.isPaused} className="bg-green-600 hover:bg-green-500 border border-green-500 rounded-xl p-3 h-20 flex flex-col justify-between transition-all active:scale-95 disabled:opacity-40"><div className="flex justify-between w-full items-start"><div className="bg-white/20 p-1.5 rounded-lg text-white font-bold text-xs">In</div><div className="text-green-100 text-[10px] uppercase font-bold">InDrive</div></div><div className="text-white font-bold text-lg text-right">{formatCurrency(shiftState.earnings.indrive)}</div></button>
-              <button onClick={() => handleOpenEntry('private')} disabled={!shiftState.isActive || shiftState.isPaused} className="bg-slate-700 hover:bg-slate-600 border border-slate-600 rounded-xl p-3 h-20 flex flex-col justify-between transition-all active:scale-95 disabled:opacity-40"><div className="flex justify-between w-full items-start"><div className="bg-white/10 p-1.5 rounded-lg text-white"><Wallet size={14} /></div><div className="text-slate-300 text-[10px] uppercase font-bold">Partic.</div></div><div className="text-white font-bold text-lg text-right">{formatCurrency(shiftState.earnings.private)}</div></button>
-              <button onClick={() => handleOpenEntry('km')} disabled={!shiftState.isActive || shiftState.isPaused} className="bg-blue-600 hover:bg-blue-500 border border-blue-500 rounded-xl p-3 h-20 flex flex-col justify-between transition-all active:scale-95 disabled:opacity-40"><div className="flex justify-between w-full items-start"><div className="bg-white/20 p-1.5 rounded-lg text-white"><Gauge size={14} /></div><div className="text-blue-100 text-[10px] uppercase font-bold">KM</div></div><div className="text-white font-bold text-lg text-right">{shiftState.km.toFixed(1)}</div></button>
-              <button onClick={() => handleOpenEntry('expense')} disabled={!shiftState.isActive || shiftState.isPaused} className="bg-rose-600 hover:bg-rose-500 border border-rose-500 rounded-xl p-3 h-20 flex flex-col justify-between transition-all active:scale-95 disabled:opacity-40"><div className="flex justify-between w-full items-start"><div className="bg-white/20 p-1.5 rounded-lg text-white"><Fuel size={14} /></div><div className="text-rose-100 text-[10px] uppercase font-bold">Gasto</div></div><div className="text-white font-bold text-lg text-right">{formatCurrency(shiftState.expenses)}</div></button>
+              <button
+                onClick={() => handleOpenEntry('uber')}
+                disabled={!shiftState.isActive || shiftState.isPaused}
+                className="bg-black hover:bg-slate-900 border border-slate-800 rounded-xl p-3 h-20 flex flex-col justify-between transition-all active:scale-95 disabled:opacity-40"
+              >
+                <div className="flex justify-between w-full items-start">
+                  <div className="bg-slate-800 p-1.5 rounded-lg text-white font-bold text-xs">U</div>
+                  <div className="text-slate-400 text-[10px] uppercase font-bold">Uber</div>
+                </div>
+                <div className="text-white font-bold text-lg text-right">{formatCurrency(shiftState.earnings.uber)}</div>
+              </button>
+              
+              <button
+                onClick={() => handleOpenEntry('99')}
+                disabled={!shiftState.isActive || shiftState.isPaused}
+                className="bg-yellow-400 hover:bg-yellow-300 border border-yellow-500 rounded-xl p-3 h-20 flex flex-col justify-between transition-all active:scale-95 disabled:opacity-40"
+              >
+                <div className="flex justify-between w-full items-start">
+                  <div className="bg-black/10 p-1.5 rounded-lg text-black font-bold text-xs">99</div>
+                  <div className="text-black/60 text-[10px] uppercase font-bold">99Pop</div>
+                </div>
+                <div className="text-black font-bold text-lg text-right">{formatCurrency(shiftState.earnings.n99)}</div>
+              </button>
+
+              <button
+                onClick={() => handleOpenEntry('indrive')}
+                disabled={!shiftState.isActive || shiftState.isPaused}
+                className="bg-green-600 hover:bg-green-500 border border-green-500 rounded-xl p-3 h-20 flex flex-col justify-between transition-all active:scale-95 disabled:opacity-40"
+              >
+                <div className="flex justify-between w-full items-start">
+                  <div className="bg-white/20 p-1.5 rounded-lg text-white font-bold text-xs">In</div>
+                  <div className="text-green-100 text-[10px] uppercase font-bold">InDrive</div>
+                </div>
+                <div className="text-white font-bold text-lg text-right">{formatCurrency(shiftState.earnings.indrive)}</div>
+              </button>
+
+              <button
+                onClick={() => handleOpenEntry('private')}
+                disabled={!shiftState.isActive || shiftState.isPaused}
+                className="bg-slate-700 hover:bg-slate-600 border border-slate-600 rounded-xl p-3 h-20 flex flex-col justify-between transition-all active:scale-95 disabled:opacity-40"
+              >
+                <div className="flex justify-between w-full items-start">
+                  <div className="bg-white/10 p-1.5 rounded-lg text-white"><Wallet size={14} /></div>
+                  <div className="text-slate-300 text-[10px] uppercase font-bold">Partic.</div>
+                </div>
+                <div className="text-white font-bold text-lg text-right">{formatCurrency(shiftState.earnings.private)}</div>
+              </button>
+
+              <button
+                onClick={() => handleOpenEntry('km')}
+                disabled={!shiftState.isActive || shiftState.isPaused}
+                className="bg-blue-600 hover:bg-blue-500 border border-blue-500 rounded-xl p-3 h-20 flex flex-col justify-between transition-all active:scale-95 disabled:opacity-40"
+              >
+                <div className="flex justify-between w-full items-start">
+                  <div className="bg-white/20 p-1.5 rounded-lg text-white"><Gauge size={14} /></div>
+                  <div className="text-blue-100 text-[10px] uppercase font-bold">KM</div>
+                </div>
+                <div className="text-white font-bold text-lg text-right">{shiftState.km.toFixed(1)}</div>
+              </button>
+
+              <button
+                onClick={() => handleOpenEntry('expense')}
+                disabled={!shiftState.isActive || shiftState.isPaused}
+                className="bg-rose-600 hover:bg-rose-500 border border-rose-500 rounded-xl p-3 h-20 flex flex-col justify-between transition-all active:scale-95 disabled:opacity-40"
+              >
+                <div className="flex justify-between w-full items-start">
+                  <div className="bg-white/20 p-1.5 rounded-lg text-white"><Fuel size={14} /></div>
+                  <div className="text-rose-100 text-[10px] uppercase font-bold">Gasto</div>
+                </div>
+                <div className="text-white font-bold text-lg text-right">{formatCurrency(shiftState.expenses)}</div>
+              </button>
             </div>
 
-            {/* Métricas Inferiores */}
+            {/* Shift Stats Row */}
             <div className="grid grid-cols-3 gap-2 mb-3 shrink-0">
-              <div className="bg-slate-900/50 rounded-lg p-4 border border-slate-800 flex flex-col items-center justify-center"><div className="text-slate-400 text-xs font-medium uppercase tracking-wide mb-1">R$ / Hora</div><div className="text-xl md:text-2xl font-bold text-white">{formatCurrency(currentShiftRph)}</div></div>
-              <div className="bg-slate-900/50 rounded-lg p-4 border border-slate-800 flex flex-col items-center justify-center"><div className="text-slate-400 text-xs font-medium uppercase tracking-wide mb-1">R$ / KM</div><div className="text-xl md:text-2xl font-bold text-white">{formatCurrency(currentShiftRpk)}</div></div>
-              <div className="bg-slate-900/50 rounded-lg p-4 border border-slate-800 flex flex-col items-center justify-center"><div className="text-slate-400 text-xs font-medium uppercase tracking-wide mb-1">Bruto</div><div className="text-xl md:text-2xl font-bold text-blue-300">{formatCurrency(currentShiftTotal)}</div></div>
+              <div className="bg-slate-900/50 rounded-lg p-4 border border-slate-800 flex flex-col items-center justify-center">
+                <div className="text-slate-400 text-xs font-medium uppercase tracking-wide mb-1">R$ / Hora</div>
+                <div className="text-xl md:text-2xl font-bold text-white">{formatCurrency(currentShiftRph)}</div>
+              </div>
+              <div className="bg-slate-900/50 rounded-lg p-4 border border-slate-800 flex flex-col items-center justify-center">
+                <div className="text-slate-400 text-xs font-medium uppercase tracking-wide mb-1">R$ / KM</div>
+                <div className="text-xl md:text-2xl font-bold text-white">{formatCurrency(currentShiftRpk)}</div>
+              </div>
+              <div className="bg-slate-900/50 rounded-lg p-4 border border-slate-800 flex flex-col items-center justify-center">
+                <div className="text-slate-400 text-xs font-medium uppercase tracking-wide mb-1">Bruto</div>
+                <div className="text-xl md:text-2xl font-bold text-blue-300">{formatCurrency(currentShiftTotal)}</div>
+              </div>
             </div>
 
-            {/* Botões de Ação */}
+            {/* Shift Footer Controls */}
             <div className="grid grid-cols-1 md:grid-cols-2 gap-3 shrink-0 mt-auto pb-4">
               {!shiftState.isActive ? (
-                <button onClick={handleStartShift} className="col-span-2 bg-indigo-600 hover:bg-indigo-500 text-white h-16 rounded-xl font-bold text-xl shadow-lg shadow-indigo-900/50 flex items-center justify-center gap-3 transition-all active:scale-[0.98] border border-indigo-500"><Play size={24} fill="currentColor" />INICIAR TURNO</button>
+                <button
+                  onClick={handleStartShift}
+                  className="col-span-2 bg-indigo-600 hover:bg-indigo-500 text-white h-16 rounded-xl font-bold text-xl shadow-lg shadow-indigo-900/50 flex items-center justify-center gap-3 transition-all active:scale-[0.98] border border-indigo-500"
+                >
+                  <Play size={24} fill="currentColor" /> INICIAR TURNO
+                </button>
               ) : (
                 <>
-                  <button onClick={handlePauseShift} className={`${shiftState.isPaused ? 'bg-emerald-600 hover:bg-emerald-500 border-emerald-500' : 'bg-slate-800 hover:bg-slate-700 border-slate-700'} text-white h-14 rounded-xl font-bold text-lg flex items-center justify-center gap-2 transition-all active:scale-[0.98] border shadow-lg`}>
+                  <button
+                    onClick={handlePauseShift}
+                    className={`${
+                      shiftState.isPaused
+                        ? 'bg-emerald-600 hover:bg-emerald-500 border-emerald-500'
+                        : 'bg-slate-800 hover:bg-slate-700 border-slate-700'
+                    } text-white h-14 rounded-xl font-bold text-lg flex items-center justify-center gap-2 transition-all active:scale-[0.98] border shadow-lg`}
+                  >
                     {shiftState.isPaused ? <Play size={20} fill="currentColor" /> : <Pause size={20} fill="currentColor" />}
                     {shiftState.isPaused ? 'RETOMAR' : 'PAUSAR'}
                   </button>
-                  <button onClick={handleStopShift} className="bg-rose-900/80 hover:bg-rose-900 text-rose-200 border border-rose-800 h-14 rounded-xl font-bold text-lg shadow-lg flex items-center justify-center gap-2 transition-all active:scale-[0.98]"><StopCircle size={20} /> ENCERRAR</button>
+                  <button
+                    onClick={handleStopShift}
+                    className="bg-rose-900/80 hover:bg-rose-900 text-rose-200 border border-rose-800 h-14 rounded-xl font-bold text-lg shadow-lg flex items-center justify-center gap-2 transition-all active:scale-[0.98]"
+                  >
+                    <StopCircle size={20} /> ENCERRAR
+                  </button>
                 </>
               )}
             </div>
           </div>
-        ) : (
-          /* --- ABAS NORMAIS (Dashboard, etc) --- */
-          <>
-            <div className="flex flex-col md:flex-row justify-between items-start md:items-center mb-8 gap-4">
-              <div className="flex items-center gap-4">
-                <div>
-                  <h1 className="text-2xl font-bold text-slate-800">{activeTab === 'dashboard' ? 'Painel de Controle' : activeTab === 'reports' ? 'Relatórios de Ganhos' : activeTab === 'bills' ? 'Contas & Planejamento' : 'Histórico Completo'}</h1>
-                  <p className="text-slate-500 text-sm flex items-center gap-1">
-                    {activeTab === 'dashboard' && stats.pendingBillsTotal > 0 ? <span className="text-rose-500 font-medium">Você tem {formatCurrency(stats.pendingBillsTotal)} em contas pendentes.</span> : <span>Gestão profissional para motoristas.</span>}
+        )}
+
+        {/* --- ABA DASHBOARD --- */}
+        {activeTab === 'dashboard' && (
+          <div className="space-y-6 animate-in fade-in slide-in-from-bottom-4 duration-500">
+            <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-2 gap-4">
+              {/* Card Meta Diária (Expandido) */}
+              <div className="bg-gradient-to-br from-indigo-600 to-blue-700 rounded-xl p-5 text-white shadow-lg relative overflow-hidden group">
+                <div className="absolute top-0 right-0 p-4 opacity-10 group-hover:opacity-20 transition-opacity">
+                  <Target size={80} />
+                </div>
+                <div className="relative z-10">
+                  <div className="flex justify-between items-start">
+                    <div className="w-full">
+                      <p className="text-indigo-100 text-sm font-medium mb-1 flex items-center gap-1">
+                        <Target size={14} /> Meta Diária (Faturamento Bruto)
+                      </p>
+                      <h3 className="text-3xl font-bold mb-2">
+                        {formatCurrency(goals.dailyTotalGoal)}
+                      </h3>
+                      
+                      {/* Divisão Visual da Meta */}
+                      <div className="flex gap-2 mt-2">
+                        <div className="bg-indigo-800/50 rounded-lg px-2 py-1 text-xs border border-indigo-400/30">
+                          <span className="opacity-70 block text-[10px] uppercase font-bold">Contas</span>
+                          <span className="font-bold">{formatCurrency(goals.dailyBillsGoal)}</span>
+                        </div>
+                         <div className="bg-emerald-800/40 rounded-lg px-2 py-1 text-xs border border-emerald-400/30">
+                          <span className="opacity-70 block text-[10px] uppercase font-bold text-emerald-200">Lucro</span>
+                          <span className="font-bold text-emerald-100">{formatCurrency(goals.dailyProjectedProfit)}</span>
+                        </div>
+                      </div>
+                    </div>
+                    <button
+                      onClick={() => setIsSettingsModalOpen(true)}
+                      className="p-2 bg-white/10 hover:bg-white/20 rounded-lg text-white transition-colors z-20 backdrop-blur-sm"
+                      title="Configurar Metas"
+                    >
+                      <Settings size={20} />
+                    </button>
+                  </div>
+                  <p className="text-xs text-indigo-200 mt-3 opacity-90 leading-tight border-t border-white/10 pt-2">
+                    {stats.goalExplanation}
                   </p>
                 </div>
-                <button onClick={() => setShowValues(!showValues)} className="hidden md:flex p-2 text-slate-400 hover:text-indigo-600 bg-white hover:bg-slate-50 rounded-lg border border-slate-200 transition-colors" title={showValues ? 'Ocultar Valores' : 'Mostrar Valores'}>{showValues ? <Eye size={20} /> : <EyeOff size={20} />}</button>
               </div>
-              <div className="flex flex-wrap gap-2 w-full md:w-auto">
-                <button onClick={() => setIsTransModalOpen(true)} className="flex-1 md:flex-none flex items-center justify-center gap-2 bg-white text-slate-700 border border-slate-200 px-4 py-2.5 rounded-xl hover:bg-slate-50 transition-all font-medium text-sm"><TrendingDown size={16} className="text-rose-500" />Novo Lançamento</button>
+
+              <StatCard
+                title="Lucro Líquido"
+                value={formatCurrency(stats.netProfit)}
+                icon={Wallet}
+                colorClass="bg-slate-800"
+                trend={`${stats.profitMargin.toFixed(0)}% Margem`}
+                trendUp={stats.profitMargin > 30}
+              />
+            </div>
+
+            <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
+              <div className="lg:col-span-2 bg-white p-6 rounded-2xl shadow-sm border border-slate-200">
+                <div className="flex justify-between items-center mb-6">
+                  <h3 className="font-bold text-slate-800">Ganhos vs Despesas</h3>
+                  <div className="text-xs text-slate-500">Visão Geral</div>
+                </div>
+                <div className="h-72 w-full flex items-center justify-center">
+                  <ResponsiveContainer width="100%" height="100%">
+                    <PieChart>
+                      <Pie
+                        data={pieData}
+                        cx="50%"
+                        cy="50%"
+                        labelLine={false}
+                        label={renderCustomizedLabel}
+                        outerRadius="80%"
+                        dataKey="value"
+                      >
+                        {pieData.map((entry, index) => (
+                          <Cell key={`cell-${index}`} fill={entry.color} />
+                        ))}
+                      </Pie>
+                      <Legend
+                        layout="vertical"
+                        verticalAlign="middle"
+                        align="right"
+                        iconType="circle"
+                      />
+                      <Tooltip
+                        formatter={(value: number) => [
+                          showValues ? `R$ ${value.toFixed(2)}` : 'R$ ****',
+                          ''
+                        ]}
+                        contentStyle={{
+                          borderRadius: '12px',
+                          border: 'none',
+                          boxShadow: '0 10px 15px -3px rgb(0 0 0 / 0.1)'
+                        }}
+                      />
+                    </PieChart>
+                  </ResponsiveContainer>
+                </div>
+              </div>
+
+              <div className="space-y-6">
+                <div className="bg-white p-6 rounded-2xl shadow-sm border border-slate-200">
+                  <div className="flex justify-between items-center mb-4">
+                    <h3 className="font-bold text-slate-800 text-sm">Contas do Mês</h3>
+                    <button onClick={() => setActiveTab('bills')} className="text-indigo-600 text-xs hover:underline">
+                      Ver tudo
+                    </button>
+                  </div>
+                  
+                  {/* Resumo de Contas */}
+                  <div className="grid grid-cols-2 gap-3 mb-4">
+                     <div className="bg-emerald-50 p-3 rounded-xl border border-emerald-100">
+                        <span className="text-[10px] text-emerald-600 font-bold uppercase block">Pagas</span>
+                        <span className="text-lg font-bold text-emerald-700">{formatCurrency(billsSummary.paid)}</span>
+                     </div>
+                     <div className="bg-rose-50 p-3 rounded-xl border border-rose-100">
+                        <span className="text-[10px] text-rose-600 font-bold uppercase block">Pendentes</span>
+                        <span className="text-lg font-bold text-rose-700">{formatCurrency(billsSummary.pending)}</span>
+                     </div>
+                  </div>
+
+                  <div className="space-y-3">
+                    {bills.filter(b => !b.isPaid).slice(0, 3).map(bill => (
+                        <div key={bill.id} className="flex justify-between items-center p-3 bg-slate-50 rounded-lg border border-slate-100">
+                          <div>
+                            <p className="text-sm font-semibold text-slate-700">{bill.description}</p>
+                            <p className="text-xs text-rose-500 font-medium">Vence: {formatDateBr(bill.dueDate)}</p>
+                          </div>
+                          <span className="text-sm font-bold text-slate-800">{formatCurrency(bill.amount)}</span>
+                        </div>
+                      ))}
+                    {bills.filter(b => !b.isPaid).length === 0 && (
+                      <p className="text-center text-xs text-slate-400 py-4">Tudo pago! 🎉</p>
+                    )}
+                  </div>
+                </div>
+              </div>
+            </div>
+          </div>
+        )}
+
+        {/* --- OUTRAS ABAS --- */}
+        {activeTab === 'reports' && (
+          <ReportsTab transactions={transactions} showValues={showValues} />
+        )}
+
+        {activeTab === 'bills' && (
+          <div className="space-y-6 animate-in fade-in slide-in-from-bottom-4 duration-500">
+            <div className="flex flex-col md:flex-row justify-between items-start md:items-center bg-white p-6 rounded-2xl shadow-sm border border-slate-200 gap-4">
+              <div>
+                <h2 className="text-lg font-bold text-slate-800">Contas a Pagar</h2>
+                <div className="flex gap-4 mt-2">
+                   <span className="text-sm text-slate-500 flex items-center gap-1">
+                     <CheckCircle2 size={14} className="text-emerald-500"/> Pagas: <b className="text-emerald-600">{formatCurrency(billsSummary.paid)}</b>
+                   </span>
+                   <span className="text-sm text-slate-500 flex items-center gap-1">
+                     <AlertCircle size={14} className="text-rose-500"/> Pendentes: <b className="text-rose-600">{formatCurrency(billsSummary.pending)}</b>
+                   </span>
+                </div>
+              </div>
+              <button
+                onClick={() => { setEditingBill(null); setIsBillModalOpen(true); }}
+                className="flex items-center gap-2 bg-rose-600 text-white px-4 py-2 rounded-lg hover:bg-rose-700 transition-colors shadow-lg shadow-rose-200 w-full md:w-auto justify-center"
+              >
+                <Plus size={16} /> Adicionar Conta
+              </button>
+            </div>
+
+            <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+              {bills.map(bill => (
+                <div
+                  key={bill.id}
+                  className={`p-5 rounded-xl border transition-all ${
+                    bill.isPaid
+                      ? 'bg-slate-50 border-slate-200 opacity-75'
+                      : 'bg-white border-rose-100 shadow-sm'
+                  }`}
+                >
+                  <div className="flex justify-between items-start mb-3">
+                    <div className={`p-2 rounded-lg ${bill.isPaid ? 'bg-emerald-100 text-emerald-600' : 'bg-rose-100 text-rose-600'}`}>
+                      {bill.isPaid ? <Wallet size={20} /> : <CalendarClock size={20} />}
+                    </div>
+                    <div className="flex items-center gap-2">
+                      <span className={`text-lg font-bold ${bill.isPaid ? 'text-slate-500' : 'text-slate-800'}`}>
+                        {formatCurrency(bill.amount)}
+                      </span>
+                      <div className="flex">
+                        <button onClick={() => handleEditBill(bill)} className="p-2 text-slate-400 hover:text-indigo-600 hover:bg-indigo-50 rounded-full transition-colors">
+                          <Edit2 size={18} />
+                        </button>
+                        <button onClick={() => handleDeleteBill(bill.id)} className="p-2 text-slate-400 hover:text-rose-500 hover:bg-rose-50 rounded-full transition-colors">
+                          <Trash2 size={18} />
+                        </button>
+                      </div>
+                    </div>
+                  </div>
+                  <div className="mb-1">
+                    <h4 className={`font-semibold ${bill.isPaid ? 'text-slate-500 line-through' : 'text-slate-800'}`}>
+                      {bill.description}
+                    </h4>
+                    {bill.category && (
+                      <span className="text-[10px] uppercase font-bold tracking-wider text-slate-400">{bill.category}</span>
+                    )}
+                  </div>
+                  <div className="flex justify-between items-center mt-4">
+                    <span className="text-xs text-slate-500">Vencimento: {formatDateBr(bill.dueDate)}</span>
+                    <button
+                      onClick={() => toggleBillPaid(bill.id)}
+                      className={`text-xs px-3 py-1 rounded-full border transition-colors ${
+                        bill.isPaid
+                          ? 'border-emerald-200 text-emerald-600 hover:bg-emerald-50'
+                          : 'border-slate-200 text-slate-600 hover:bg-slate-100'
+                      }`}
+                    >
+                      {bill.isPaid ? 'Marcar como Pendente' : 'Marcar como Pago'}
+                    </button>
+                  </div>
+                </div>
+              ))}
+            </div>
+          </div>
+        )}
+
+        {/* Aba Histórico (Mantida igual) */}
+        {activeTab === 'history' && (
+          <div className="space-y-6 animate-in fade-in slide-in-from-bottom-4 duration-500">
+             <div className="bg-white p-4 md:p-6 rounded-2xl shadow-sm border border-slate-200">
+              <div className="flex flex-col md:flex-row justify-between items-center gap-4 mb-4">
+                <div>
+                  <h2 className="text-xl font-bold text-slate-800 flex items-center gap-2">
+                    <History className="text-indigo-600" /> Histórico
+                  </h2>
+                </div>
+                <div className="flex bg-slate-100 p-1 rounded-xl overflow-x-auto max-w-full">
+                  {(['today', 'week', 'month', 'all', 'custom'] as const).map(
+                    range => (
+                      <button
+                        key={range}
+                        onClick={() => setHistoryRange(range)}
+                        className={`px-3 py-1.5 text-xs md:text-sm font-medium rounded-lg transition-all whitespace-nowrap ${
+                          historyRange === range
+                            ? 'bg-white text-indigo-600 shadow-sm'
+                            : 'text-slate-500 hover:text-slate-700'
+                        }`}
+                      >
+                        {range === 'today' && 'Hoje'}
+                        {range === 'week' && 'Semana'}
+                        {range === 'month' && 'Mês'}
+                        {range === 'all' && 'Tudo'}
+                        {range === 'custom' && 'Outro'}
+                      </button>
+                    )
+                  )}
+                </div>
+              </div>
+
+              {historyRange === 'custom' && (
+                <div className="flex items-center gap-2 bg-slate-50 p-2 rounded-xl border border-slate-200 justify-center animate-in fade-in slide-in-from-top-2 mb-4">
+                  <input
+                    type="date"
+                    value={historyCustomStart}
+                    onChange={e => setHistoryCustomStart(e.target.value)}
+                    className="px-2 py-1.5 border rounded-lg text-sm outline-none focus:ring-2 focus:ring-indigo-500 w-full md:w-auto"
+                  />
+                  <span className="text-slate-400"><ChevronRight size={16} /></span>
+                  <input
+                    type="date"
+                    value={historyCustomEnd}
+                    onChange={e => setHistoryCustomEnd(e.target.value)}
+                    className="px-2 py-1.5 border rounded-lg text-sm outline-none focus:ring-2 focus:ring-indigo-500 w-full md:w-auto"
+                  />
+                </div>
+              )}
+
+              <div className="grid grid-cols-3 gap-2 md:gap-4 mt-2">
+                <div className="bg-emerald-50 p-3 rounded-xl border border-emerald-100 text-center">
+                  <div className="text-xs text-emerald-600 font-bold uppercase mb-1 flex justify-center items-center gap-1">
+                    <ArrowUpCircle size={12} /> Entradas
+                  </div>
+                  <div className="text-sm md:text-lg font-bold text-emerald-700">{formatCurrency(historySummary.income)}</div>
+                </div>
+                <div className="bg-rose-50 p-3 rounded-xl border border-rose-100 text-center">
+                  <div className="text-xs text-rose-600 font-bold uppercase mb-1 flex justify-center items-center gap-1">
+                    <ArrowDownCircle size={12} /> Saídas
+                  </div>
+                  <div className="text-sm md:text-lg font-bold text-rose-700">{formatCurrency(historySummary.expense)}</div>
+                </div>
+                <div className="bg-slate-50 p-3 rounded-xl border border-slate-200 text-center">
+                  <div className="text-xs text-slate-600 font-bold uppercase mb-1">Saldo</div>
+                  <div className={`text-sm md:text-lg font-bold ${historySummary.balance >= 0 ? 'text-indigo-600' : 'text-rose-600'}`}>
+                    {formatCurrency(historySummary.balance)}
+                  </div>
+                </div>
               </div>
             </div>
 
-            {/* Dashboard Content */}
-            {activeTab === 'dashboard' && (
-              <div className="space-y-6 animate-in fade-in slide-in-from-bottom-4 duration-500">
-                <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-2 gap-4">
-                  {/* Card Meta Diária (Real) Atualizado */}
-                  <div className="bg-gradient-to-br from-indigo-600 to-blue-700 rounded-xl p-5 text-white shadow-lg relative overflow-hidden group">
-                    <div className="absolute top-0 right-0 p-4 opacity-10 group-hover:opacity-20 transition-opacity"><Target size={80} /></div>
-                    <div className="relative z-10">
-                      <div className="flex justify-between items-start">
-                        <div>
-                          <p className="text-indigo-100 text-sm font-medium mb-1 flex items-center gap-1"><Target size={14} /> Meta Diária (Real)</p>
-                          <h3 className="text-3xl font-bold mb-1">{formatCurrency(goals.dailyTotalGoal)}</h3>
-                        </div>
-                        <button onClick={() => setIsSettingsModalOpen(true)} className="p-2 bg-white/10 hover:bg-white/20 rounded-lg text-white transition-colors z-20 backdrop-blur-sm" title="Configurar Metas"><Settings size={20} /></button>
-                      </div>
-                      <p className="text-xs text-indigo-200 mt-1 opacity-90 leading-tight">{stats.goalExplanation}</p>
-                    </div>
+            <div className="bg-white rounded-2xl shadow-sm border border-slate-200 overflow-hidden">
+               {/* Lista de Histórico (Mantida igual ao anterior, omitindo repetição excessiva de código já existente) */}
+               <div className="divide-y divide-slate-100">
+                {filteredHistory.length === 0 ? (
+                  <div className="p-8 text-center text-slate-400">
+                    <Filter size={48} className="mx-auto mb-2 opacity-20" />
+                    <p>Nenhuma transação encontrada neste período.</p>
                   </div>
-                  <StatCard title="Lucro Líquido" value={formatCurrency(stats.netProfit)} icon={Wallet} colorClass="bg-slate-800" trend={`${stats.profitMargin.toFixed(0)}% Margem`} trendUp={stats.profitMargin > 30} />
-                </div>
-                <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
-                  <div className="lg:col-span-2 bg-white p-6 rounded-2xl shadow-sm border border-slate-200">
-                    <div className="flex justify-between items-center mb-6"><h3 className="font-bold text-slate-800">Ganhos vs Despesas</h3><div className="text-xs text-slate-500">Visão Geral</div></div>
-                    <div className="h-72 w-full flex items-center justify-center">
-                      <ResponsiveContainer width="100%" height="100%">
-                        <PieChart>
-                          <Pie data={pieData} cx="50%" cy="50%" labelLine={false} label={renderCustomizedLabel} outerRadius="80%" dataKey="value">
-                            {pieData.map((entry, index) => <Cell key={`cell-${index}`} fill={entry.color} />)}
-                          </Pie>
-                          <Legend layout="vertical" verticalAlign="middle" align="right" iconType="circle" />
-                          <Tooltip formatter={(value: number) => [showValues ? `R$ ${value.toFixed(2)}` : 'R$ ****', '']} contentStyle={{ borderRadius: '12px', border: 'none', boxShadow: '0 10px 15px -3px rgb(0 0 0 / 0.1)' }} />
-                        </PieChart>
-                      </ResponsiveContainer>
-                    </div>
-                  </div>
-                  <div className="space-y-6">
-                    <div className="bg-white p-6 rounded-2xl shadow-sm border border-slate-200">
-                      <div className="flex justify-between items-center mb-4"><h3 className="font-bold text-slate-800 text-sm">Próximos Pagamentos</h3><button onClick={() => setActiveTab('bills')} className="text-indigo-600 text-xs hover:underline">Ver tudo</button></div>
-                      <div className="space-y-3">
-                        {bills.filter(b => !b.isPaid).slice(0, 3).map(bill => (
-                          <div key={bill.id} className="flex justify-between items-center p-3 bg-slate-50 rounded-lg border border-slate-100">
-                            <div><p className="text-sm font-semibold text-slate-700">{bill.description}</p><p className="text-xs text-rose-500 font-medium">Vence: {formatDateBr(bill.dueDate)}</p></div>
-                            <span className="text-sm font-bold text-slate-800">{formatCurrency(bill.amount)}</span>
+                ) : (
+                  filteredHistory.map(t => (
+                    <div key={t.id} className="hover:bg-slate-50 transition-colors p-4 flex justify-between items-center">
+                       <div className="flex-1 min-w-0 pr-4">
+                          <div className="font-semibold text-slate-800 truncate mb-1">{t.description}</div>
+                          <div className="flex items-center gap-2 text-xs text-slate-500">
+                            <span>{formatDateBr(t.date)}</span>
+                            <span className={`px-1.5 py-0.5 rounded ${t.type === TransactionType.INCOME ? 'bg-emerald-50 text-emerald-700' : 'bg-rose-50 text-rose-700'}`}>
+                              {t.category || 'Entrada'}
+                            </span>
                           </div>
-                        ))}
-                        {bills.filter(b => !b.isPaid).length === 0 && <p className="text-center text-xs text-slate-400 py-4">Tudo pago! 🎉</p>}
-                      </div>
-                    </div>
-                  </div>
-                </div>
-              </div>
-            )}
-
-            {/* Reports Content */}
-            {activeTab === 'reports' && <ReportsTab transactions={transactions} showValues={showValues} />}
-
-            {/* Bills Content */}
-            {activeTab === 'bills' && (
-              <div className="space-y-6 animate-in fade-in slide-in-from-bottom-4 duration-500">
-                <div className="grid grid-cols-2 gap-4">
-                  <div className="bg-white p-5 rounded-2xl shadow-sm border border-emerald-100 flex items-center justify-between">
-                    <div><p className="text-xs font-bold text-emerald-600 uppercase mb-1">Total Pago</p><h3 className="text-2xl font-bold text-emerald-700">{formatCurrency(billsSummary.paid)}</h3></div>
-                    <div className="bg-emerald-50 p-3 rounded-full text-emerald-600"><CheckCircle2 size={24} /></div>
-                  </div>
-                  <div className="bg-white p-5 rounded-2xl shadow-sm border border-rose-100 flex items-center justify-between">
-                    <div><p className="text-xs font-bold text-rose-600 uppercase mb-1">A Pagar</p><h3 className="text-2xl font-bold text-rose-700">{formatCurrency(billsSummary.pending)}</h3></div>
-                    <div className="bg-rose-50 p-3 rounded-full text-rose-600"><AlertCircle size={24} /></div>
-                  </div>
-                </div>
-                <div className="flex justify-between items-center bg-white p-6 rounded-2xl shadow-sm border border-slate-200">
-                  <div><h2 className="text-lg font-bold text-slate-800">Contas a Pagar</h2><p className="text-slate-500 text-sm">Gerencie suas obrigações futuras e mantenha o caixa positivo.</p></div>
-                  <button onClick={() => { setEditingBill(null); setIsBillModalOpen(true); }} className="flex items-center gap-2 bg-rose-600 text-white px-4 py-2 rounded-lg hover:bg-rose-700 transition-colors shadow-lg shadow-rose-200"><Plus size={16} /> Adicionar</button>
-                </div>
-                <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
-                  {bills.map(bill => (
-                    <div key={bill.id} className={`p-5 rounded-xl border transition-all ${bill.isPaid ? 'bg-slate-50 border-slate-200 opacity-75' : 'bg-white border-rose-100 shadow-sm'}`}>
-                      <div className="flex justify-between items-start mb-3">
-                        <div className={`p-2 rounded-lg ${bill.isPaid ? 'bg-emerald-100 text-emerald-600' : 'bg-rose-100 text-rose-600'}`}>{bill.isPaid ? <Wallet size={20} /> : <CalendarClock size={20} />}</div>
-                        <div className="flex items-center gap-2">
-                          <span className={`text-lg font-bold ${bill.isPaid ? 'text-slate-500' : 'text-slate-800'}`}>{formatCurrency(bill.amount)}</span>
-                          <div className="flex">
-                            <button onClick={() => handleEditBill(bill)} className="p-2 text-slate-400 hover:text-indigo-600 hover:bg-indigo-50 rounded-full transition-colors" title="Editar conta"><Edit2 size={18} /></button>
-                            <button onClick={() => handleDeleteBill(bill.id)} className="p-2 text-slate-400 hover:text-rose-500 hover:bg-rose-50 rounded-full transition-colors" title="Excluir conta"><Trash2 size={18} /></button>
+                       </div>
+                       <div className="flex items-center gap-3">
+                          <div className={`font-bold ${t.type === TransactionType.INCOME ? 'text-emerald-600' : 'text-rose-600'}`}>
+                            {t.type === TransactionType.INCOME ? '+' : '-'} {formatCurrency(t.amount)}
                           </div>
-                        </div>
-                      </div>
-                      <div className="mb-1"><h4 className={`font-semibold ${bill.isPaid ? 'text-slate-500 line-through' : 'text-slate-800'}`}>{bill.description}</h4>{bill.category && <span className="text-[10px] uppercase font-bold tracking-wider text-slate-400">{bill.category}</span>}</div>
-                      <div className="flex justify-between items-center mt-4">
-                        <span className="text-xs text-slate-500">Vencimento: {formatDateBr(bill.dueDate)}</span>
-                        <button onClick={() => toggleBillPaid(bill.id)} className={`text-xs px-3 py-1 rounded-full border transition-colors ${bill.isPaid ? 'border-emerald-200 text-emerald-600 hover:bg-emerald-50' : 'border-slate-200 text-slate-600 hover:bg-slate-100'}`}>{bill.isPaid ? 'Marcar como Pendente' : 'Marcar como Pago'}</button>
-                      </div>
+                          <button onClick={() => handleDeleteTransaction(t.id)} className="text-slate-300 hover:text-rose-500 p-1">
+                            <Trash2 size={18} />
+                          </button>
+                       </div>
                     </div>
-                  ))}
-                </div>
-              </div>
-            )}
-
-            {/* History Content */}
-            {activeTab === 'history' && (
-              <div className="space-y-6 animate-in fade-in slide-in-from-bottom-4 duration-500">
-                <div className="bg-white p-4 md:p-6 rounded-2xl shadow-sm border border-slate-200">
-                  <div className="flex flex-col md:flex-row justify-between items-center gap-4 mb-4">
-                    <div><h2 className="text-xl font-bold text-slate-800 flex items-center gap-2"><History className="text-indigo-600" /> Histórico de Transações</h2></div>
-                    <div className="flex bg-slate-100 p-1 rounded-xl overflow-x-auto max-w-full">
-                      {(['today', 'week', 'month', 'all', 'custom'] as const).map(range => (
-                        <button key={range} onClick={() => setHistoryRange(range)} className={`px-3 py-1.5 text-xs md:text-sm font-medium rounded-lg transition-all whitespace-nowrap ${historyRange === range ? 'bg-white text-indigo-600 shadow-sm' : 'text-slate-500 hover:text-slate-700'}`}>{range === 'today' && 'Hoje'}{range === 'week' && 'Semana'}{range === 'month' && 'Mês'}{range === 'all' && 'Tudo'}{range === 'custom' && 'Outro'}</button>
-                      ))}
-                    </div>
-                  </div>
-                  {historyRange === 'custom' && (
-                    <div className="flex items-center gap-2 bg-slate-50 p-2 rounded-xl border border-slate-200 justify-center animate-in fade-in slide-in-from-top-2 mb-4">
-                      <input type="date" value={historyCustomStart} onChange={e => setHistoryCustomStart(e.target.value)} className="px-2 py-1.5 border rounded-lg text-sm outline-none focus:ring-2 focus:ring-indigo-500 w-full md:w-auto" />
-                      <span className="text-slate-400"><ChevronRight size={16} /></span>
-                      <input type="date" value={historyCustomEnd} onChange={e => setHistoryCustomEnd(e.target.value)} className="px-2 py-1.5 border rounded-lg text-sm outline-none focus:ring-2 focus:ring-indigo-500 w-full md:w-auto" />
-                    </div>
-                  )}
-                  <div className="grid grid-cols-3 gap-2 md:gap-4 mt-2">
-                    <div className="bg-emerald-50 p-3 rounded-xl border border-emerald-100 text-center"><div className="text-xs text-emerald-600 font-bold uppercase mb-1 flex justify-center items-center gap-1"><ArrowUpCircle size={12} /> Entradas</div><div className="text-sm md:text-lg font-bold text-emerald-700">{formatCurrency(historySummary.income)}</div></div>
-                    <div className="bg-rose-50 p-3 rounded-xl border border-rose-100 text-center"><div className="text-xs text-rose-600 font-bold uppercase mb-1 flex justify-center items-center gap-1"><ArrowDownCircle size={12} /> Saídas</div><div className="text-sm md:text-lg font-bold text-rose-700">{formatCurrency(historySummary.expense)}</div></div>
-                    <div className="bg-slate-50 p-3 rounded-xl border border-slate-200 text-center"><div className="text-xs text-slate-600 font-bold uppercase mb-1">Saldo</div><div className={`text-sm md:text-lg font-bold ${historySummary.balance >= 0 ? 'text-indigo-600' : 'text-rose-600'}`}>{formatCurrency(historySummary.balance)}</div></div>
-                  </div>
-                </div>
-                <div className="bg-white rounded-2xl shadow-sm border border-slate-200 overflow-hidden">
-                  <div className="hidden md:grid grid-cols-12 bg-slate-50 border-b border-slate-200 p-4 text-xs font-semibold text-slate-500 uppercase"><div className="col-span-2">Data</div><div className="col-span-4">Descrição</div><div className="col-span-2">Categoria</div><div className="col-span-2">Eficiência</div><div className="col-span-1 text-right">Valor</div><div className="col-span-1 text-center">Ações</div></div>
-                  <div className="divide-y divide-slate-100">
-                    {filteredHistory.length === 0 ? <div className="p-8 text-center text-slate-400"><Filter size={48} className="mx-auto mb-2 opacity-20" /><p>Nenhuma transação encontrada neste período.</p></div> : filteredHistory.map(t => (
-                      <div key={t.id} className="hover:bg-slate-50 transition-colors">
-                        <div className="hidden md:grid grid-cols-12 items-center p-4 text-sm">
-                          <div className="col-span-2 text-slate-600">{formatDateBr(t.date)}</div>
-                          <div className="col-span-4 font-medium text-slate-800">{t.description}</div>
-                          <div className="col-span-2"><span className={`px-2 py-1 rounded text-xs border ${t.category ? 'bg-slate-100 text-slate-600 border-slate-200' : 'bg-emerald-100 text-emerald-700 border-emerald-200'}`}>{t.category || 'Entrada'}</span></div>
-                          <div className="col-span-2 text-slate-500 text-xs">{t.mileage ? `${t.mileage}km • ${t.durationHours}h` : '-'}</div>
-                          <div className={`col-span-1 font-bold text-right ${t.type === TransactionType.INCOME ? 'text-emerald-600' : 'text-rose-600'}`}>{t.type === TransactionType.INCOME ? '+' : '-'} {formatCurrency(t.amount)}</div>
-                          <div className="col-span-1 text-center"><button onClick={() => handleDeleteTransaction(t.id)} className="text-slate-400 hover:text-rose-500 p-1"><CloseIcon size={16} /></button></div>
-                        </div>
-                        <div className="md:hidden p-4 flex justify-between items-center">
-                          <div className="flex-1 min-w-0 pr-4">
-                            <div className="font-semibold text-slate-800 truncate mb-1">{t.description}</div>
-                            <div className="flex items-center gap-2 text-xs text-slate-500"><span>{formatDateBr(t.date)}</span><span>•</span><span className={`px-1.5 py-0.5 rounded ${t.type === TransactionType.INCOME ? 'bg-emerald-50 text-emerald-700' : 'bg-rose-50 text-rose-700'}`}>{t.category || 'Entrada'}</span></div>
-                          </div>
-                          <div className="flex items-center gap-3">
-                            <div className={`font-bold ${t.type === TransactionType.INCOME ? 'text-emerald-600' : 'text-rose-600'}`}>{t.type === TransactionType.INCOME ? '+' : '-'} {formatCurrency(t.amount)}</div>
-                            <button onClick={() => handleDeleteTransaction(t.id)} className="text-slate-300 hover:text-rose-500 p-1"><Trash2 size={18} /></button>
-                          </div>
-                        </div>
-                      </div>
-                    ))}
-                  </div>
-                </div>
-              </div>
-            )}
-          </>
+                  ))
+                )}
+               </div>
+            </div>
+          </div>
         )}
+
       </main>
 
-      {/* Modals */}
+      {/* Modais */}
       <TransactionModal isOpen={isTransModalOpen} onClose={() => setIsTransModalOpen(false)} onSave={handleAddTransaction} onSaveBill={handleSaveBill} categories={categories} />
       <ShiftModal isOpen={isShiftModalOpen} onClose={() => setIsShiftModalOpen(false)} onSave={handleSaveShift} initialData={shiftState.isActive || shiftState.isPaused ? { amount: currentShiftTotal, mileage: shiftState.km, durationHours: currentShiftHoursPrecise } : null} />
       <ShiftEntryModal isOpen={entryModalOpen} onClose={() => setEntryModalOpen(false)} category={entryCategory} onSave={handleEntrySave} categories={categories} />
       <BillModal isOpen={isBillModalOpen} onClose={() => { setIsBillModalOpen(false); setEditingBill(null); }} onSave={handleSaveBill} initialData={editingBill} categories={categories} />
-      <SettingsModal 
-        isOpen={isSettingsModalOpen} 
-        onClose={() => setIsSettingsModalOpen(false)} 
-        workDays={workDays} 
-        onSaveWorkDays={setWorkDays} 
-        categories={categories} 
-        onAddCategory={handleAddCategory} 
-        onEditCategory={handleEditCategory} 
-        onDeleteCategory={handleDeleteCategory}
-        monthlySalaryGoal={monthlySalaryGoal}
-        monthlyWorkingDays={monthlyWorkingDays}
-        onSaveGoals={handleSaveGoals}
-      />
+      <SettingsModal isOpen={isSettingsModalOpen} onClose={() => setIsSettingsModalOpen(false)} workDays={workDays} onSaveWorkDays={setWorkDays} categories={categories} onAddCategory={handleAddCategory} onEditCategory={handleEditCategory} onDeleteCategory={handleDeleteCategory} monthlySalaryGoal={monthlySalaryGoal} monthlyWorkingDays={monthlyWorkingDays} onSaveGoals={handleSaveGoals} />
     </div>
   );
 }
