@@ -1,200 +1,182 @@
-import React, { useState, useEffect } from 'react';
-import { X, Calendar, Tag, Trash2, Plus, Target, DollarSign, Briefcase } from 'lucide-react';
+import { Transaction, Bill, ShiftState, UserSubscription } from '../types';
+import firebase from 'firebase/compat/app';
+import 'firebase/compat/auth';
+import 'firebase/compat/firestore';
 
-interface SettingsModalProps {
-  isOpen: boolean;
-  onClose: () => void;
-  // Dados existentes
-  workDays: number[];
-  onSaveWorkDays: (days: number[]) => void;
+const STORAGE_KEY = 'finandrive_data_v1';
+
+// Definição da estrutura de dados principal do App
+export interface AppData {
+  transactions: Transaction[];
+  bills: Bill[];
   categories: string[];
-  onAddCategory: (name: string) => void;
-  onEditCategory: (oldName: string, newName: string) => void;
-  onDeleteCategory: (name: string) => void;
-  // Novos dados de meta
-  monthlySalaryGoal: number;
-  monthlyWorkingDays: number;
-  onSaveGoals: (salary: number, days: number) => void;
+  shiftState?: ShiftState;
+  monthlySalaryGoal?: number;
+  monthlyWorkingDays?: number;
 }
 
-const WEEKDAYS = [
-  { id: 0, label: 'Dom' },
-  { id: 1, label: 'Seg' },
-  { id: 2, label: 'Ter' },
-  { id: 3, label: 'Qua' },
-  { id: 4, label: 'Qui' },
-  { id: 5, label: 'Sex' },
-  { id: 6, label: 'Sáb' },
-];
-
-export const SettingsModal: React.FC<SettingsModalProps> = ({ 
-  isOpen, onClose, 
-  workDays, onSaveWorkDays, 
-  categories, onAddCategory, onDeleteCategory,
-  monthlySalaryGoal, monthlyWorkingDays, onSaveGoals
-}) => {
-  const [newCat, setNewCat] = useState('');
-  
-  // Estados locais para as metas
-  const [salaryInput, setSalaryInput] = useState('');
-  const [daysInput, setDaysInput] = useState('');
-
-  // Atualiza inputs quando o modal abre ou props mudam
-  useEffect(() => {
-    if (isOpen) {
-      setSalaryInput(monthlySalaryGoal ? monthlySalaryGoal.toString() : '');
-      setDaysInput(monthlyWorkingDays ? monthlyWorkingDays.toString() : '');
+// Helper para pegar variáveis de ambiente de forma segura
+const getEnv = (key: string) => {
+  try {
+    if (typeof process !== 'undefined' && process.env && process.env[key]) {
+      return process.env[key];
     }
-  }, [isOpen, monthlySalaryGoal, monthlyWorkingDays]);
+    // @ts-ignore
+    if (typeof import.meta !== 'undefined' && import.meta.env && import.meta.env[key]) {
+      // @ts-ignore
+      return import.meta.env[key];
+    }
+  } catch (e) {
+    return undefined;
+  }
+  return undefined;
+};
 
-  if (!isOpen) return null;
+const firebaseConfig = {
+  apiKey: getEnv('FIREBASE_API_KEY') || getEnv('REACT_APP_FIREBASE_API_KEY') || getEnv('VITE_FIREBASE_API_KEY'),
+  authDomain: getEnv('FIREBASE_AUTH_DOMAIN') || getEnv('REACT_APP_FIREBASE_AUTH_DOMAIN') || getEnv('VITE_FIREBASE_AUTH_DOMAIN'),
+  projectId: getEnv('FIREBASE_PROJECT_ID') || getEnv('REACT_APP_FIREBASE_PROJECT_ID') || getEnv('VITE_FIREBASE_PROJECT_ID'),
+  storageBucket: getEnv('FIREBASE_STORAGE_BUCKET') || getEnv('VITE_FIREBASE_STORAGE_BUCKET'),
+  messagingSenderId: getEnv('FIREBASE_MESSAGING_SENDER_ID') || getEnv('VITE_FIREBASE_MESSAGING_SENDER_ID'),
+  appId: getEnv('FIREBASE_APP_ID') || getEnv('VITE_FIREBASE_APP_ID')
+};
 
-  const toggleDay = (day: number) => {
-    if (workDays.includes(day)) {
-      onSaveWorkDays(workDays.filter(d => d !== day));
+let db: firebase.firestore.Firestore | null = null;
+let auth: firebase.auth.Auth | null = null;
+
+if (firebaseConfig.apiKey && firebaseConfig.projectId) {
+  try {
+    const app = !firebase.apps.length ? firebase.initializeApp(firebaseConfig) : firebase.app();
+    db = firebase.firestore(app);
+    auth = firebase.auth(app);
+    console.log("Firebase initialized");
+  } catch (error) {
+    console.error("Firebase initialization failed:", error);
+  }
+}
+
+export { auth, db };
+
+export const logoutUser = async () => {
+  if (auth) await auth.signOut();
+};
+
+// Função para limpar campos undefined (Firebase não aceita undefined)
+const cleanPayload = (obj: any): any => {
+  if (Array.isArray(obj)) {
+    return obj.map(v => cleanPayload(v));
+  } else if (obj !== null && typeof obj === 'object') {
+    return Object.entries(obj).reduce((acc, [k, v]) => {
+      if (v !== undefined) {
+        acc[k] = cleanPayload(v);
+      }
+      return acc;
+    }, {} as any);
+  }
+  return obj;
+};
+
+// --- Lógica de Assinatura ---
+
+export const getOrCreateUserSubscription = async (uid: string): Promise<UserSubscription | null> => {
+  if (!db) return null;
+
+  try {
+    const userRef = db.collection('users').doc(uid);
+    const userSnap = await userRef.get();
+
+    if (userSnap.exists) {
+      return userSnap.data() as UserSubscription;
     } else {
-      onSaveWorkDays([...workDays, day].sort());
+      // Cria novo usuário com 7 dias de trial
+      const now = new Date();
+      const trialEndsDate = new Date();
+      trialEndsDate.setDate(now.getDate() + 7);
+
+      const newSub: UserSubscription = {
+        status: 'trial',
+        createdAt: firebase.firestore.Timestamp.fromDate(now),
+        trialEndsAt: firebase.firestore.Timestamp.fromDate(trialEndsDate)
+      };
+
+      await userRef.set(newSub);
+      return newSub;
     }
-  };
+  } catch (error) {
+    console.error("Erro ao gerenciar assinatura:", error);
+    return null;
+  }
+};
 
-  const handleAddCat = (e: React.FormEvent) => {
-    e.preventDefault();
-    if(newCat) {
-      onAddCategory(newCat);
-      setNewCat('');
+export const checkSubscriptionStatus = (sub: UserSubscription): 'active' | 'expired' | 'loading' => {
+  if (!sub) return 'expired';
+  if (sub.status === 'paid') return 'active';
+  
+  if (sub.status === 'trial') {
+    const now = new Date();
+    const endDate = (sub.trialEndsAt as any)?.toDate ? (sub.trialEndsAt as any).toDate() : new Date(sub.trialEndsAt);
+    
+    if (now > endDate) {
+      return 'expired';
     }
-  };
+    return 'active';
+  }
 
-  const handleSaveAll = () => {
-    // Converter inputs para número
-    const salary = parseFloat(salaryInput.replace(',', '.')) || 0;
-    const days = parseInt(daysInput) || 26; // Default seguro
-    onSaveGoals(salary, days);
-    onClose();
-  };
+  return 'expired';
+};
 
-  return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-900/60 backdrop-blur-sm animate-in fade-in duration-200">
-      <div className="bg-white rounded-2xl w-full max-w-lg shadow-2xl overflow-hidden animate-in zoom-in-95 duration-200 max-h-[90vh] flex flex-col">
-        <div className="bg-slate-50 p-4 border-b border-slate-100 flex justify-between items-center">
-          <h2 className="font-bold text-lg text-slate-800">Configurações</h2>
-          <button onClick={onClose} className="text-slate-400 hover:text-slate-600">
-            <X size={20} />
-          </button>
-        </div>
+// --- Lógica de Dados do App ---
 
-        <div className="p-6 space-y-8 overflow-y-auto">
-          
-          {/* Seção de Metas Financeiras */}
-          <section className="bg-indigo-50/50 p-4 rounded-xl border border-indigo-100">
-            <h3 className="text-sm font-bold text-indigo-700 uppercase mb-4 flex items-center gap-2">
-              <Target size={18} /> Definição de Metas
-            </h3>
-            
-            <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-              <div>
-                <label className="block text-xs font-bold text-slate-500 uppercase mb-1">
-                  Salário Mensal Desejado (R$)
-                </label>
-                <div className="relative">
-                  <DollarSign className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" size={16} />
-                  <input 
-                    type="number"
-                    value={salaryInput}
-                    onChange={e => setSalaryInput(e.target.value)}
-                    placeholder="Ex: 3000"
-                    className="w-full pl-9 pr-3 py-2.5 bg-white border border-slate-200 rounded-lg focus:ring-2 focus:ring-indigo-500 outline-none text-slate-800 font-bold"
-                  />
-                </div>
-                <p className="text-[10px] text-slate-400 mt-1">Quanto você quer lucrar livre no mês.</p>
-              </div>
+export const loadAppData = async (userId?: string): Promise<AppData | null> => {
+  // 1. Se temos userId e banco conectado, busca na nuvem
+  if (db && userId) {
+    try {
+      const docRef = db.collection("userData").doc(userId);
+      const docSnap = await docRef.get();
 
-              <div>
-                <label className="block text-xs font-bold text-slate-500 uppercase mb-1">
-                  Dias Trabalhados / Mês
-                </label>
-                <div className="relative">
-                  <Briefcase className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" size={16} />
-                  <input 
-                    type="number"
-                    max="31"
-                    value={daysInput}
-                    onChange={e => setDaysInput(e.target.value)}
-                    placeholder="Ex: 26"
-                    className="w-full pl-9 pr-3 py-2.5 bg-white border border-slate-200 rounded-lg focus:ring-2 focus:ring-indigo-500 outline-none text-slate-800 font-bold"
-                  />
-                </div>
-                <p className="text-[10px] text-slate-400 mt-1">Usado para calcular a meta diária.</p>
-              </div>
-            </div>
-          </section>
+      if (docSnap.exists) {
+        const data = docSnap.data() as AppData;
+        localStorage.setItem(`${STORAGE_KEY}_${userId}`, JSON.stringify(data));
+        return data;
+      }
+      return null;
+    } catch (e) {
+      console.warn("Firestore load error (using fallback):", e);
+    }
+  }
 
-          <hr className="border-slate-100" />
+  // 2. Fallback: LocalStorage
+  return new Promise((resolve) => {
+    try {
+      const key = userId ? `${STORAGE_KEY}_${userId}` : STORAGE_KEY;
+      const raw = localStorage.getItem(key);
+      if (raw) {
+        resolve(JSON.parse(raw));
+      } else {
+        resolve(null);
+      }
+    } catch (e) {
+      resolve(null);
+    }
+  });
+};
 
-          {/* Work Days (Apenas visual/referência por enquanto, ou para lógica futura) */}
-          <section>
-            <h3 className="text-sm font-bold text-slate-500 uppercase mb-3 flex items-center gap-2">
-              <Calendar size={16} /> Dias da Semana (Referência)
-            </h3>
-            <div className="flex justify-between gap-2">
-              {WEEKDAYS.map(day => (
-                <button
-                  key={day.id}
-                  onClick={() => toggleDay(day.id)}
-                  className={`flex-1 aspect-square rounded-xl text-sm font-bold transition-all ${
-                    workDays.includes(day.id)
-                      ? 'bg-slate-800 text-white shadow-md'
-                      : 'bg-slate-100 text-slate-400 hover:bg-slate-200'
-                  }`}
-                >
-                  {day.label}
-                </button>
-              ))}
-            </div>
-          </section>
+export const saveAppData = async (data: AppData, userId?: string): Promise<void> => {
+  // Sempre salva local como backup
+  try {
+    const key = userId ? `${STORAGE_KEY}_${userId}` : STORAGE_KEY;
+    localStorage.setItem(key, JSON.stringify(data));
+  } catch (e) {
+    console.error("LocalStorage save error", e);
+  }
 
-          <hr className="border-slate-100" />
-
-          {/* Categories */}
-          <section>
-            <h3 className="text-sm font-bold text-slate-500 uppercase mb-3 flex items-center gap-2">
-              <Tag size={16} /> Categorias de Gastos
-            </h3>
-            
-            <form onSubmit={handleAddCat} className="flex gap-2 mb-4">
-              <input 
-                value={newCat}
-                onChange={e => setNewCat(e.target.value)}
-                placeholder="Nova categoria..."
-                className="flex-1 px-4 py-2 border border-slate-200 rounded-lg outline-none focus:ring-2 focus:ring-indigo-500 text-sm"
-              />
-              <button type="submit" className="bg-indigo-600 text-white p-2 rounded-lg hover:bg-indigo-500 transition-colors">
-                <Plus size={20} />
-              </button>
-            </form>
-
-            <div className="flex flex-wrap gap-2">
-              {categories.map(cat => (
-                <div key={cat} className="group flex items-center gap-2 bg-slate-50 border border-slate-200 px-3 py-1.5 rounded-full text-sm text-slate-700">
-                  {cat}
-                  <button 
-                    onClick={() => onDeleteCategory(cat)}
-                    className="text-slate-400 hover:text-rose-500 opacity-0 group-hover:opacity-100 transition-opacity"
-                  >
-                    <Trash2 size={14} />
-                  </button>
-                </div>
-              ))}
-            </div>
-          </section>
-        </div>
-        
-        <div className="p-4 border-t border-slate-100 bg-slate-50">
-           <button onClick={handleSaveAll} className="w-full py-3 rounded-xl bg-slate-900 text-white font-bold hover:bg-slate-800 transition-colors shadow-lg">
-             Salvar Alterações
-           </button>
-        </div>
-      </div>
-    </div>
-  );
+  // Salva na nuvem
+  if (db && userId) {
+    try {
+      const cleanData = cleanPayload(data);
+      await db.collection("userData").doc(userId).set(cleanData, { merge: true });
+    } catch (e) {
+      console.error("Firestore save error", e);
+    }
+  }
 };
