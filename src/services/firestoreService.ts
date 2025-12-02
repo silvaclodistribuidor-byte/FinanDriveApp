@@ -6,12 +6,17 @@ import { getAuth, signOut } from "firebase/auth";
 const STORAGE_KEY = "finandrive_data_v1";
 
 export interface AppData {
-  transactions: Transaction[];
+    transactions: Transaction[];
   bills: Bill[];
   categories: string[];
-  shiftState?: ShiftState;
-}
 
+  // estado do turno (se estiver usando aqui, deixamos opcional)
+  shiftState?: ShiftState;
+
+  // NOVO: metas globais do motorista
+  monthlySalaryGoal?: number;   // salário desejado no mês
+  monthlyWorkingDays?: number;  // quantos dias pretende trabalhar no mês
+}
 // Pega variável de ambiente tanto em Vite (import.meta.env) quanto em process.env
 const getEnv = (key: string) => {
   try {
