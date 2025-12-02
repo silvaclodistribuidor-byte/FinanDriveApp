@@ -28,8 +28,7 @@ import {
   CheckCircle2,
   AlertCircle,
   LogOut,
-  Lock,
-  BarChart3
+  Lock
 } from 'lucide-react';
 import { PieChart, Pie, Cell, Tooltip, ResponsiveContainer, Legend } from 'recharts';
 import { StatCard } from './components/StatCard';
@@ -200,24 +199,24 @@ function App() {
     initUserData();
   }, [user]);
 
-  // 3. Salvar dados quando mudam
+  // 3. Salvar dados quando mudam (EXCETO shiftState para evitar spam)
   useEffect(() => {
     if (!user || isLoadingData || subscriptionStatus !== 'active') return;
     
-    // Objeto completo para salvar
+    // Objeto parcial para salvar (ShiftState é salvo manualmente nos handlers)
     const payload = { 
       transactions, 
       bills, 
       categories, 
-      shiftState,
+      // Não incluímos shiftState aqui pois ele muda a cada segundo
       monthlySalaryGoal,
       monthlyWorkingDays
     };
     
-    saveAppData(payload, user.uid).catch((error) => {
+    saveAppData(payload as any, user.uid).catch((error) => {
       console.error("Erro ao salvar dados no Firestore:", error);
     });
-  }, [transactions, bills, categories, shiftState, monthlySalaryGoal, monthlyWorkingDays, user, isLoadingData, subscriptionStatus]);
+  }, [transactions, bills, categories, monthlySalaryGoal, monthlyWorkingDays, user, isLoadingData, subscriptionStatus]);
 
   // Timer do Turno
   useEffect(() => {
@@ -233,9 +232,27 @@ function App() {
     };
   }, [shiftState.isActive, shiftState.isPaused]);
 
+  // Helper para salvar TUDO incluindo o turno manualmente
+  const saveAllWithShift = (newShiftState: ShiftState) => {
+    if (user) {
+      saveAppData({
+        transactions,
+        bills,
+        categories,
+        shiftState: newShiftState,
+        monthlySalaryGoal,
+        monthlyWorkingDays
+      }, user.uid);
+    }
+  };
+
   // --- Handlers ---
 
   const handleLogout = async () => {
+    if (user) {
+      // Salva o estado final antes de sair
+      saveAllWithShift(shiftState);
+    }
     await logoutUser();
     setTransactions([]);
     setBills([]);
@@ -293,20 +310,30 @@ function App() {
           ];
         }
       }
+      
+      // SALVAR MANUALMENTE NO FIRESTORE
+      saveAllWithShift(newState);
+      
       return newState;
     });
   };
 
   const handleStartShift = () => {
-    setShiftState(prev => ({ ...prev, isActive: true, isPaused: false, startTime: Date.now() }));
+    const newState = { ...shiftState, isActive: true, isPaused: false, startTime: Date.now() };
+    setShiftState(newState);
+    saveAllWithShift(newState);
   };
 
   const handlePauseShift = () => {
-    setShiftState(prev => ({ ...prev, isPaused: !prev.isPaused }));
+    const newState = { ...shiftState, isPaused: !shiftState.isPaused };
+    setShiftState(newState);
+    saveAllWithShift(newState);
   };
 
   const handleStopShift = () => {
-    setShiftState(prev => ({ ...prev, isPaused: true }));
+    const newState = { ...shiftState, isPaused: true };
+    setShiftState(newState);
+    saveAllWithShift(newState);
     setIsShiftModalOpen(true);
   };
 
@@ -321,11 +348,16 @@ function App() {
       const newStartDate = new Date();
       newStartDate.setHours(h, m, 0, 0);
       const newElapsed = Math.floor((Date.now() - newStartDate.getTime()) / 1000);
-      setShiftState(prev => ({
-        ...prev,
-        startTime: newStartDate.getTime(),
-        elapsedSeconds: Math.max(0, newElapsed)
-      }));
+      
+      setShiftState(prev => {
+        const newState = {
+          ...prev,
+          startTime: newStartDate.getTime(),
+          elapsedSeconds: Math.max(0, newElapsed)
+        };
+        saveAllWithShift(newState);
+        return newState;
+      });
     }
   };
 
@@ -470,7 +502,7 @@ function App() {
   const getShiftGoalColor = () => {
     switch (shiftGoalStatus) {
       case 'belowBills': return 'bg-rose-900 border-rose-700 text-rose-100';
-      case 'between': return 'bg-amber-700 border-amber-500 text-amber-100'; // Amber escuro para contraste
+      case 'between': return 'bg-amber-700 border-amber-500 text-amber-100'; 
       case 'aboveSalary': return 'bg-emerald-900 border-emerald-700 text-emerald-100';
       default: return 'bg-slate-800 border-slate-700 text-slate-300';
     }
@@ -516,17 +548,10 @@ function App() {
     const newTransactions = [incomeTransaction, ...expenseTransactions, ...transactions];
     setTransactions(newTransactions);
     
-    // Reseta o estado do turno (inativo)
+    // Reseta o estado do turno (inativo) e salva imediatamente
     const resetShiftState = { isActive: false, isPaused: false, startTime: null, elapsedSeconds: 0, earnings: { uber: 0, n99: 0, indrive: 0, private: 0 }, expenses: 0, expenseList: [], km: 0 };
     setShiftState(resetShiftState);
-
-    // Força salvamento imediato
-    if (user) {
-      saveAppData({ 
-        transactions: newTransactions, bills, categories, 
-        shiftState: resetShiftState, monthlySalaryGoal, monthlyWorkingDays 
-      }, user.uid);
-    }
+    saveAllWithShift(resetShiftState);
   };
 
   const handleSaveBill = (billData: Omit<Bill, 'id'>) => {
@@ -809,7 +834,7 @@ function App() {
                   </div>
                 </div>
                 <div className="flex justify-between items-center bg-white p-6 rounded-2xl shadow-sm border border-slate-200">
-                  <div><h2 className="text-lg font-bold text-slate-800">Contas a Pagar</h2><p className="text-slate-500 text-sm">Gerencie suas obrigações futuras.</p></div>
+                  <div><h2 className="text-lg font-bold text-slate-800">Contas a Pagar</h2><p className="text-slate-500 text-sm">Gerencie suas obrigações futuras e mantenha o caixa positivo.</p></div>
                   <button onClick={() => { setEditingBill(null); setIsBillModalOpen(true); }} className="flex items-center gap-2 bg-rose-600 text-white px-4 py-2 rounded-lg hover:bg-rose-700 transition-colors shadow-lg shadow-rose-200"><Plus size={16} /> Adicionar</button>
                 </div>
                 <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
