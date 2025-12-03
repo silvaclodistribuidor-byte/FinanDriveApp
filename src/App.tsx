@@ -1,2123 +1,772 @@
-// src/App.tsx
 import React, { useState, useMemo, useEffect, useRef } from "react";
-import {
-  Bar,
-  BarChart,
-  CartesianGrid,
-  Legend,
-  ResponsiveContainer,
-  Tooltip,
-  XAxis,
-  YAxis,
-  Cell,
-  PieChart,
-  Pie,
-} from "recharts";
-import { SettingsModal } from "./components/SettingsModal";
+import { 
+  LayoutDashboard, 
+  Wallet, 
+  TrendingDown, 
+  History,
+  Menu,
+  X as CloseIcon,
+  Clock,
+  Gauge,
+  CalendarClock,
+  Target,
+  Play,
+  Pause,
+  StopCircle,
+  Fuel,
+  Plus,
+  Trash2,
+  Edit2,
+  Settings,
+  Eye,
+  EyeOff,
+  PieChart as PieChartIcon,
+  Filter,
+  ChevronRight,
+  ArrowDownCircle,
+  ArrowUpCircle,
+  CheckCircle2,
+  AlertCircle,
+  LogOut
+} from 'lucide-react';
+import { PieChart, Pie, Cell, Tooltip, ResponsiveContainer, Legend } from 'recharts';
+import { StatCard } from './components/StatCard';
+import { TransactionModal } from './components/TransactionModal';
+import { ShiftModal } from './components/ShiftModal';
+import { ShiftEntryModal } from './components/ShiftEntryModal';
+import { BillModal } from './components/BillModal';
+import { SettingsModal } from './components/SettingsModal';
+import { ReportsTab } from './components/ReportsTab';
+import { Login } from './components/Login';
+import { loadAppData, saveAppData, auth, logoutUser } from "./services/firestoreService";
+import { Transaction, TransactionType, ExpenseCategory, Bill, ShiftState, DEFAULT_CATEGORIES } from './types';
+import { onAuthStateChanged, User } from "firebase/auth";
 
-// Types
-enum TransactionType {
-  INCOME = "income",
-  EXPENSE = "expense",
-}
+const getTodayString = () => {
+  const now = new Date();
+  return [
+    now.getFullYear(),
+    String(now.getMonth() + 1).padStart(2, '0'),
+    String(now.getDate()).padStart(2, '0')
+  ].join('-');
+};
 
-type RideType = "uber" | "ninedine" | "indriver" | "private" | "km";
+const parseDateFromInput = (dateStr: string) => {
+  if (!dateStr) return new Date();
+  const [y, m, d] = dateStr.split('-').map(Number);
+  return new Date(y, m - 1, d);
+};
 
-interface Transaction {
-  id: string;
-  date: string;
-  type: TransactionType;
-  description: string;
-  amount: number;
-  isDailyCost?: boolean;
-}
+const formatDateBr = (dateStr: string) => {
+  if (!dateStr) return '-';
+  const date = parseDateFromInput(dateStr);
+  return date.toLocaleDateString('pt-BR');
+};
 
-interface ShiftEntry {
-  rideType: RideType;
-  amount: number;
-  km?: number;
-  description?: string;
-  timestamp: string;
-}
+const RADIAN = Math.PI / 180;
+const renderCustomizedLabel = ({ cx, cy, midAngle, innerRadius, outerRadius, percent }: any) => {
+  const radius = innerRadius + (outerRadius - innerRadius) * 0.5;
+  const x = cx + radius * Math.cos(-midAngle * RADIAN);
+  const y = cy + radius * Math.sin(-midAngle * RADIAN);
 
-interface Shift {
-  id: string;
-  date: string;
-  startTime: string;
-  endTime?: string;
-  totalAmount: number;
-  totalKm: number;
-  entries: ShiftEntry[];
-  platformTotals: {
-    uber: number;
-    ninedine: number;
-    indriver: number;
-    private: number;
-  };
-  totalExpenses: number;
-}
-
-type BillCategory = "fixa" | "variável" | "assinatura" | "outros";
-
-interface Bill {
-  id: string;
-  description: string;
-  amount: number;
-  category: BillCategory;
-  dueDate: string;
-  isPaid: boolean;
-  monthly?: boolean;
-}
-
-interface Goal {
-  dailyBillsGoal: number;
-  dailySalaryGoal: number;
-  dailyTotalGoal: number;
-  hasGoals: boolean;
-  hasBills: boolean;
-}
-
-type ActiveTab =
-  | "dashboard"
-  | "shift"
-  | "reports"
-  | "bills"
-  | "history"
-  | "settings";
-
-type DashboardMode = "diario" | "semanal" | "mensal";
-
-type SubscriptionPlan = "free" | "premium";
-
-interface User {
-  id: string;
-  name: string;
-  phone?: string;
-  plan: SubscriptionPlan;
-  planExpiresAt?: string;
-}
-
-interface ShiftFilter {
-  startDate: string;
-  endDate: string;
-}
-
-// Helper: format currency
-const formatCurrency = (value: number): string =>
-  value.toLocaleString("pt-BR", { style: "currency", currency: "BRL" });
-
-// Helper: format date
-const formatDate = (date: Date): string =>
-  date.toISOString().split("T")[0];
-
-// Sample initial data
-const initialTransactions: Transaction[] = [
-  {
-    id: "1",
-    date: formatDate(new Date()),
-    type: TransactionType.INCOME,
-    description: "Corrida Uber",
-    amount: 50,
-  },
-  {
-    id: "2",
-    date: formatDate(new Date()),
-    type: TransactionType.EXPENSE,
-    description: "Combustível",
-    amount: 30,
-  },
-];
-
-const initialBills: Bill[] = [
-  {
-    id: "1",
-    description: "Aluguel",
-    amount: 1200,
-    category: "fixa",
-    dueDate: "2024-03-05",
-    isPaid: false,
-    monthly: true,
-  },
-  {
-    id: "2",
-    description: "Internet",
-    amount: 120,
-    category: "assinatura",
-    dueDate: "2024-03-10",
-    isPaid: false,
-    monthly: true,
-  },
-];
-
-const initialShifts: Shift[] = [];
-
-// Recharts formatting helpers
-const currencyFormatter = (val: number) =>
-  new Intl.NumberFormat("pt-BR", { style: "currency", currency: "BRL" }).format(
-    val
-  );
-
-// Modal props
-interface ModalProps {
-  isOpen: boolean;
-  onClose: () => void;
-}
-
-// Transaction Modal
-interface TransactionModalProps extends ModalProps {
-  onSave: (transaction: Transaction) => void;
-}
-
-const TransactionModal: React.FC<TransactionModalProps> = ({
-  isOpen,
-  onClose,
-  onSave,
-}) => {
-  const [date, setDate] = useState(formatDate(new Date()));
-  const [type, setType] = useState<TransactionType>(TransactionType.INCOME);
-  const [description, setDescription] = useState("");
-  const [amount, setAmount] = useState("");
-  const [isDailyCost, setIsDailyCost] = useState(false);
-
-  const handleSubmit = () => {
-    if (!description || !amount) return;
-
-    const transaction: Transaction = {
-      id: Date.now().toString(),
-      date,
-      type,
-      description,
-      amount: parseFloat(amount),
-      isDailyCost: type === TransactionType.EXPENSE && isDailyCost,
-    };
-
-    onSave(transaction);
-    onClose();
-
-    setDescription("");
-    setAmount("");
-    setIsDailyCost(false);
-  };
-
-  if (!isOpen) return null;
+  if (percent < 0.05) return null;
 
   return (
-    <div className="modal-backdrop">
-      <div className="modal">
-        <h2>Lançar Entrada/Saída</h2>
-        <div className="modal-content">
-          <label>
-            Data:
-            <input
-              type="date"
-              value={date}
-              onChange={(e) => setDate(e.target.value)}
-            />
-          </label>
-
-          <label>
-            Tipo:
-            <select
-              value={type}
-              onChange={(e) => setType(e.target.value as TransactionType)}
-            >
-              <option value={TransactionType.INCOME}>Entrada</option>
-              <option value={TransactionType.EXPENSE}>Saída</option>
-            </select>
-          </label>
-
-          <label>
-            Descrição:
-            <input
-              type="text"
-              value={description}
-              onChange={(e) => setDescription(e.target.value)}
-            />
-          </label>
-
-          <label>
-            Valor (R$):
-            <input
-              type="number"
-              step="0.01"
-              value={amount}
-              onChange={(e) => setAmount(e.target.value)}
-            />
-          </label>
-
-          {type === TransactionType.EXPENSE && (
-            <label className="checkbox-label">
-              <input
-                type="checkbox"
-                checked={isDailyCost}
-                onChange={(e) => setIsDailyCost(e.target.checked)}
-              />
-              Custo diário de operação (combustível, alimentação, etc.)
-            </label>
-          )}
-        </div>
-
-        <div className="modal-actions">
-          <button onClick={onClose} className="btn-secondary">
-            Cancelar
-          </button>
-          <button onClick={handleSubmit} className="btn-primary">
-            Salvar
-          </button>
-        </div>
-      </div>
-    </div>
+    <text
+      x={x}
+      y={y}
+      fill="white"
+      textAnchor="middle"
+      dominantBaseline="central"
+      className="text-xs font-bold"
+    >
+      {`${(percent * 100).toFixed(0)}%`}
+    </text>
   );
 };
 
-// Shift Modal
-interface ShiftModalProps extends ModalProps {
-  onStart: (shift: Shift) => void;
-  onEnd: (shiftId: string) => void;
-  activeShift?: Shift | null;
-}
+const INITIAL_TRANSACTIONS: Transaction[] = [];
+const INITIAL_BILLS: Bill[] = [];
 
-const ShiftModal: React.FC<ShiftModalProps> = ({
-  isOpen,
-  onClose,
-  onStart,
-  onEnd,
-  activeShift,
-}) => {
-  const [date, setDate] = useState(formatDate(new Date()));
-  const [startTime, setStartTime] = useState(
-    new Date().toTimeString().substring(0, 5)
-  );
-
-  const handleStart = () => {
-    if (!startTime) return;
-
-    const newShift: Shift = {
-      id: Date.now().toString(),
-      date,
-      startTime,
-      totalAmount: 0,
-      totalKm: 0,
-      entries: [],
-      platformTotals: {
-        uber: 0,
-        ninedine: 0,
-        indriver: 0,
-        private: 0,
-      },
-      totalExpenses: 0,
-    };
-
-    onStart(newShift);
-    onClose();
-  };
-
-  const handleEnd = () => {
-    if (!activeShift) return;
-    onEnd(activeShift.id);
-    onClose();
-  };
-
-  useEffect(() => {
-    if (!isOpen) return;
-
-    const now = new Date();
-    setDate(formatDate(now));
-    setStartTime(now.toTimeString().substring(0, 5));
-  }, [isOpen]);
-
-  if (!isOpen) return null;
-
-  const isActive = !!activeShift;
-
-  return (
-    <div className="modal-backdrop">
-      <div className="modal">
-        <h2>{isActive ? "Encerrar Turno" : "Iniciar Turno"}</h2>
-        <div className="modal-content">
-          {!isActive && (
-            <>
-              <label>
-                Data do Turno:
-                <input
-                  type="date"
-                  value={date}
-                  onChange={(e) => setDate(e.target.value)}
-                />
-              </label>
-
-              <label>
-                Horário de Início:
-                <input
-                  type="time"
-                  value={startTime}
-                  onChange={(e) => setStartTime(e.target.value)}
-                />
-              </label>
-            </>
-          )}
-
-          {isActive && (
-            <div className="shift-summary">
-              <p>
-                <strong>Turno iniciado em:</strong> {activeShift.date} às{" "}
-                {activeShift.startTime}
-              </p>
-              <p>
-                <strong>Total faturado:</strong>{" "}
-                {formatCurrency(activeShift.totalAmount)}
-              </p>
-              <p>
-                <strong>Total KM:</strong> {activeShift.totalKm.toFixed(1)} km
-              </p>
-            </div>
-          )}
-        </div>
-
-        <div className="modal-actions">
-          <button onClick={onClose} className="btn-secondary">
-            Cancelar
-          </button>
-          <button
-            onClick={isActive ? handleEnd : handleStart}
-            className={isActive ? "btn-danger" : "btn-primary"}
-          >
-            {isActive ? "Encerrar Turno" : "Iniciar Turno"}
-          </button>
-        </div>
-      </div>
-    </div>
-  );
-};
-
-// Shift Entry Modal
-interface ShiftEntryModalProps extends ModalProps {
-  onSave: (entry: ShiftEntry) => void;
-  rideType?: RideType;
-}
-
-const ShiftEntryModal: React.FC<ShiftEntryModalProps> = ({
-  isOpen,
-  onClose,
-  onSave,
-  rideType: initialRideType,
-}) => {
-  const [rideType, setRideType] = useState<RideType>(
-    initialRideType || "uber"
-  );
-  const [amount, setAmount] = useState("");
-  const [km, setKm] = useState("");
-  const [description, setDescription] = useState("");
-
-  useEffect(() => {
-    if (!isOpen) return;
-    if (initialRideType) {
-      setRideType(initialRideType);
-    }
-    setAmount("");
-    setKm("");
-    setDescription("");
-  }, [isOpen, initialRideType]);
-
-  const handleSubmit = () => {
-    if (!amount && rideType !== "km") return;
-
-    const entry: ShiftEntry = {
-      rideType,
-      amount: rideType === "km" ? 0 : parseFloat(amount),
-      km: km ? parseFloat(km) : undefined,
-      description,
-      timestamp: new Date().toISOString(),
-    };
-
-    onSave(entry);
-    onClose();
-  };
-
-  if (!isOpen) return null;
-
-  const rideTypeLabel: Record<RideType, string> = {
-    uber: "Uber",
-    ninedine: "99",
-    indriver: "InDrive",
-    private: "Particular",
-    km: "KM",
-  };
-
-  return (
-    <div className="modal-backdrop">
-      <div className="modal">
-        <h2>Lançar Corrida / KM</h2>
-        <div className="modal-content">
-          <label>
-            Tipo:
-            <select
-              value={rideType}
-              onChange={(e) => setRideType(e.target.value as RideType)}
-            >
-              <option value="uber">Uber</option>
-              <option value="ninedine">99</option>
-              <option value="indriver">InDrive</option>
-              <option value="private">Particular</option>
-              <option value="km">KM (sem valor)</option>
-            </select>
-          </label>
-
-          {rideType !== "km" && (
-            <label>
-              Valor (R$):
-              <input
-                type="number"
-                step="0.01"
-                value={amount}
-                onChange={(e) => setAmount(e.target.value)}
-              />
-            </label>
-          )}
-
-          <label>
-            KM:
-            <input
-              type="number"
-              step="0.1"
-              value={km}
-              onChange={(e) => setKm(e.target.value)}
-            />
-          </label>
-
-          <label>
-            Observações:
-            <input
-              type="text"
-              value={description}
-              onChange={(e) => setDescription(e.target.value)}
-            />
-          </label>
-        </div>
-
-        <div className="modal-actions">
-          <button onClick={onClose} className="btn-secondary">
-            Cancelar
-          </button>
-          <button onClick={handleSubmit} className="btn-primary">
-            Salvar {rideTypeLabel[rideType]}
-          </button>
-        </div>
-      </div>
-    </div>
-  );
-};
-
-// Bill Modal
-interface BillModalProps extends ModalProps {
-  onSave: (bill: Bill) => void;
-  initialBill?: Bill | null;
-  categories: string[];
-}
-
-const BillModal: React.FC<BillModalProps> = ({
-  isOpen,
-  onClose,
-  onSave,
-  initialBill,
-  categories,
-}) => {
-  const [description, setDescription] = useState("");
-  const [amount, setAmount] = useState("");
-  const [category, setCategory] = useState<BillCategory>("fixa");
-  const [dueDate, setDueDate] = useState(formatDate(new Date()));
-  const [isPaid, setIsPaid] = useState(false);
-  const [monthly, setMonthly] = useState(true);
-
-  useEffect(() => {
-    if (!isOpen) return;
-
-    if (initialBill) {
-      setDescription(initialBill.description);
-      setAmount(initialBill.amount.toString());
-      setCategory(initialBill.category);
-      setDueDate(initialBill.dueDate);
-      setIsPaid(initialBill.isPaid);
-      setMonthly(!!initialBill.monthly);
-    } else {
-      setDescription("");
-      setAmount("");
-      setCategory("fixa");
-      setDueDate(formatDate(new Date()));
-      setIsPaid(false);
-      setMonthly(true);
-    }
-  }, [isOpen, initialBill]);
-
-  const handleSubmit = () => {
-    if (!description || !amount || !dueDate) return;
-
-    const bill: Bill = {
-      id: initialBill?.id || Date.now().toString(),
-      description,
-      amount: parseFloat(amount),
-      category,
-      dueDate,
-      isPaid,
-      monthly,
-    };
-
-    onSave(bill);
-    onClose();
-  };
-
-  if (!isOpen) return null;
-
-  return (
-    <div className="modal-backdrop">
-      <div className="modal">
-        <h2>{initialBill ? "Editar Conta" : "Nova Conta"}</h2>
-        <div className="modal-content">
-          <label>
-            Descrição:
-            <input
-              type="text"
-              value={description}
-              onChange={(e) => setDescription(e.target.value)}
-            />
-          </label>
-
-          <label>
-            Valor (R$):
-            <input
-              type="number"
-              step="0.01"
-              value={amount}
-              onChange={(e) => setAmount(e.target.value)}
-            />
-          </label>
-
-          <label>
-            Categoria:
-            <select
-              value={category}
-              onChange={(e) => setCategory(e.target.value as BillCategory)}
-            >
-              <option value="fixa">Fixa</option>
-              <option value="variável">Variável</option>
-              <option value="assinatura">Assinatura</option>
-              <option value="outros">Outros</option>
-            </select>
-          </label>
-
-          <label>
-            Vencimento:
-            <input
-              type="date"
-              value={dueDate}
-              onChange={(e) => setDueDate(e.target.value)}
-            />
-          </label>
-
-          <label className="checkbox-label">
-            <input
-              type="checkbox"
-              checked={monthly}
-              onChange={(e) => setMonthly(e.target.checked)}
-            />
-            Conta mensal recorrente
-          </label>
-
-          <label className="checkbox-label">
-            <input
-              type="checkbox"
-              checked={isPaid}
-              onChange={(e) => setIsPaid(e.target.checked)}
-            />
-            Já está paga
-          </label>
-        </div>
-
-        <div className="modal-actions">
-          <button onClick={onClose} className="btn-secondary">
-            Cancelar
-          </button>
-          <button onClick={handleSubmit} className="btn-primary">
-            Salvar
-          </button>
-        </div>
-      </div>
-    </div>
-  );
-};
-
-// Main App component
 function App() {
-  const [user, setUser] = useState<User | null>({
-    id: "1",
-    name: "Motorista",
-    plan: "free",
-  });
+  const [user, setUser] = useState<User | null>(null);
+  const [authLoading, setAuthLoading] = useState(true);
 
-  const [activeTab, setActiveTab] = useState<ActiveTab>("dashboard");
-  const [transactions, setTransactions] =
-    useState<Transaction[]>(initialTransactions);
-  const [shifts, setShifts] = useState<Shift[]>(initialShifts);
-  const [bills, setBills] = useState<Bill[]>(initialBills);
-  const [subscriptionModalOpen, setSubscriptionModalOpen] = useState(false);
-  const [transactionModalOpen, setTransactionModalOpen] = useState(false);
-  const [shiftModalOpen, setShiftModalOpen] = useState(false);
-  const [entryModalOpen, setEntryModalOpen] = useState(false);
-  const [billModalOpen, setBillModalOpen] = useState(false);
-  const [billBeingEdited, setBillBeingEdited] = useState<Bill | null>(null);
-  const [dashboardMode, setDashboardMode] =
-    useState<DashboardMode>("diario");
-  const [shiftFilter, setShiftFilter] = useState<ShiftFilter>({
-    startDate: formatDate(new Date()),
-    endDate: formatDate(new Date()),
-  });
-  const [settingsModalOpen, setSettingsModalOpen] = useState(false);
+  // App Data State
+  const [transactions, setTransactions] = useState<Transaction[]>(INITIAL_TRANSACTIONS);
+  const [bills, setBills] = useState<Bill[]>(INITIAL_BILLS);
+  const [categories, setCategories] = useState<string[]>(DEFAULT_CATEGORIES);
+  
+  // UI State
+  const [isLoadingData, setIsLoadingData] = useState(false);
   const [workDays, setWorkDays] = useState<number[]>([1, 2, 3, 4, 5, 6]);
-  const [categories, setCategories] = useState<string[]>([
-    "Combustível",
-    "Alimentação",
-    "Manutenção",
-  ]);
-  const [monthlySalaryGoal, setMonthlySalaryGoal] = useState<number>(0);
-  const [monthlyWorkingDays, setMonthlyWorkingDays] = useState<number>(26);
-  const [loginName, setLoginName] = useState<string>("");
-  const [isLoggedIn, setIsLoggedIn] = useState<boolean>(false);
-  const [loginError, setLoginError] = useState<string | null>(null);
-  const [activeShift, setActiveShift] = useState<Shift | null>(null);
+  const [showValues, setShowValues] = useState(true);
+  const [activeTab, setActiveTab] = useState<'dashboard' | 'bills' | 'history' | 'shift' | 'reports'>('dashboard');
+  
+  // Modals
+  const [isTransModalOpen, setIsTransModalOpen] = useState(false);
+  const [isShiftModalOpen, setIsShiftModalOpen] = useState(false);
+  const [isBillModalOpen, setIsBillModalOpen] = useState(false);
+  const [editingBill, setEditingBill] = useState<Bill | null>(null);
+  const [isSettingsModalOpen, setIsSettingsModalOpen] = useState(false);
+  const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
+  const [entryModalOpen, setEntryModalOpen] = useState(false);
 
-  const dashboardRef = useRef<HTMLDivElement | null>(null);
+  // Filter & Input State
+  const [historyRange, setHistoryRange] = useState<'today' | 'week' | 'month' | 'all' | 'custom'>('all');
+  const [historyCustomStart, setHistoryCustomStart] = useState('');
+  const [historyCustomEnd, setHistoryCustomEnd] = useState('');
+  const [entryCategory, setEntryCategory] = useState<'uber' | '99' | 'indrive' | 'private' | 'km' | 'expense' | null>(null);
 
+  // Shift Logic
+  const [shiftState, setShiftState] = useState<ShiftState>({
+    isActive: false,
+    isPaused: false,
+    startTime: null,
+    elapsedSeconds: 0,
+    earnings: { uber: 0, n99: 0, indrive: 0, private: 0 },
+    expenses: 0,
+    expenseList: [],
+    km: 0
+  });
+
+  const timerRef = useRef<number | null>(null);
+
+  // 1. Monitorar Autenticação
   useEffect(() => {
-    const notFirstMarkupEaferTwoAddLogin = localStorage.getItem(
-      "notFirstMarkupEaferTwoAddLogin"
-    );
-    if (notFirstMarkupEaferTwoAddLogin) {
-      const savedUser = localStorage.getItem("user");
-      if (savedUser) {
-        setUser(JSON.parse(savedUser));
-        setIsLoggedIn(true);
-      }
-      const savedTransactions = localStorage.getItem("transactions");
-      if (savedTransactions) {
-        setTransactions(JSON.parse(savedTransactions));
-      }
-      const savedShifts = localStorage.getItem("shifts");
-      if (savedShifts) {
-        setShifts(JSON.parse(savedShifts));
-      }
-      const savedBills = localStorage.getItem("bills");
-      if (savedBills) {
-        setBills(JSON.parse(savedBills));
-      }
-      const savedWorkDays = localStorage.getItem("workDays");
-      if (savedWorkDays) {
-        setWorkDays(JSON.parse(savedWorkDays));
-      }
-      const savedCategories = localStorage.getItem("categories");
-      if (savedCategories) {
-        setCategories(JSON.parse(savedCategories));
-      }
-      const savedMonthlySalaryGoal =
-        localStorage.getItem("monthlySalaryGoal");
-      if (savedMonthlySalaryGoal) {
-        setMonthlySalaryGoal(parseFloat(savedMonthlySalaryGoal));
-      }
-      const savedMonthlyWorkingDays = localStorage.getItem(
-        "monthlyWorkingDays"
-      );
-      if (savedMonthlyWorkingDays) {
-        setMonthlyWorkingDays(parseInt(savedMonthlyWorkingDays, 10));
-      }
-      const savedActiveShift = localStorage.getItem("activeShift");
-      if (savedActiveShift) {
-        setActiveShift(JSON.parse(savedActiveShift));
-      }
+    if(!auth) {
+      setAuthLoading(false);
+      return;
     }
+    const unsubscribe = onAuthStateChanged(auth, (currentUser) => {
+      setUser(currentUser);
+      setAuthLoading(false);
+    });
+    return () => unsubscribe();
   }, []);
 
+  // 2. Carregar dados quando o usuário muda
   useEffect(() => {
-    localStorage.setItem("notFirstMarkupEaferTwoAddLogin", "true");
-    localStorage.setItem("transactions", JSON.stringify(transactions));
-    localStorage.setItem("shifts", JSON.stringify(shifts));
-    localStorage.setItem("bills", JSON.stringify(bills));
-    localStorage.setItem("workDays", JSON.stringify(workDays));
-    localStorage.setItem("categories", JSON.stringify(categories));
-    localStorage.setItem(
-      "monthlySalaryGoal",
-      monthlySalaryGoal.toString()
-    );
-    localStorage.setItem(
-      "monthlyWorkingDays",
-      monthlyWorkingDays.toString()
-    );
     if (user) {
-      localStorage.setItem("user", JSON.stringify(user));
+      setIsLoadingData(true);
+      loadAppData(user.uid).then((data) => {
+        if (data) {
+          if (data.transactions) setTransactions(data.transactions);
+          else setTransactions([]); // Novo usuário limpa dados antigos da memória
+          
+          if (data.bills) setBills(data.bills);
+          else setBills([]);
+
+          if (data.categories) setCategories(data.categories);
+
+          // Carrega estado do turno se existir
+          if (data.shiftState) setShiftState(data.shiftState);
+        } else {
+          // Usuário novo, zera tudo para não mostrar dados de cache
+          setTransactions([]);
+          setBills([]);
+          // Mantém shiftState padrão (zerado)
+        }
+        setIsLoadingData(false);
+      });
     }
-    if (activeShift) {
-      localStorage.setItem("activeShift", JSON.stringify(activeShift));
+  }, [user]);
+
+  // 3. Salvar dados quando mudam (apenas se logado e não estiver carregando)
+  useEffect(() => {
+    if (!user || isLoadingData) return;
+    
+    // Inclui shiftState no payload
+    const payload = { transactions, bills, categories, shiftState };
+    saveAppData(payload, user.uid).catch((error) => {
+      console.error("Erro ao salvar dados no Firestore:", error);
+    });
+  }, [transactions, bills, categories, shiftState, user, isLoadingData]);
+
+  // Timer do Turno
+  useEffect(() => {
+    if (shiftState.isActive && !shiftState.isPaused) {
+      timerRef.current = window.setInterval(() => {
+        setShiftState(prev => ({ ...prev, elapsedSeconds: prev.elapsedSeconds + 1 }));
+      }, 1000);
     } else {
-      localStorage.removeItem("activeShift");
+      if (timerRef.current) clearInterval(timerRef.current);
     }
-  }, [
-    transactions,
-    shifts,
-    bills,
-    workDays,
-    categories,
-    monthlySalaryGoal,
-    monthlyWorkingDays,
-    user,
-    activeShift,
-  ]);
-
-  // --- Calculations ---
-
-  // 1. Metas Diárias (CORRIGIDAS)
-  const goals: Goal = useMemo(() => {
-    const now = new Date();
-    const currentMonthStr = `${now.getFullYear()}-${String(
-      now.getMonth() + 1
-    ).padStart(2, "0")}`;
-
-    const billsThisMonth = bills.filter((b) =>
-      b.dueDate.startsWith(currentMonthStr)
-    );
-    const totalMonthlyBills = billsThisMonth.reduce(
-      (acc, b) => acc + b.amount,
-      0
-    );
-
-    // Evita divisão por zero
-    const workingDays = monthlyWorkingDays > 0 ? monthlyWorkingDays : 26;
-
-    // Meta diária apenas para cobrir as contas do mês
-    const dailyBillsGoal = totalMonthlyBills / workingDays;
-    // Meta diária de faturamento BRUTO (valor que o motorista quer girar no mês)
-    const dailySalaryGoal = monthlySalaryGoal / workingDays;
-    // CORREÇÃO: a meta total diária é o faturamento bruto desejado.
-    // As contas saem de dentro desse valor, não são somadas por fora.
-    const dailyTotalGoal = dailySalaryGoal;
-
-    return {
-      dailyBillsGoal,
-      dailySalaryGoal,
-      dailyTotalGoal,
-      hasGoals: dailySalaryGoal > 0,
-      hasBills: totalMonthlyBills > 0,
+    return () => {
+      if (timerRef.current) clearInterval(timerRef.current);
     };
-  }, [bills, monthlySalaryGoal, monthlyWorkingDays]);
+  }, [shiftState.isActive, shiftState.isPaused]);
 
-  // 2. Estatísticas Gerais
-  const stats = useMemo(() => {
-    const totalIncome = transactions
-      .filter((t) => t.type === TransactionType.INCOME)
-      .reduce((acc, curr) => acc + curr.amount, 0);
-    const totalExpense = transactions
-      .filter((t) => t.type === TransactionType.EXPENSE)
-      .reduce((acc, curr) => acc + curr.amount, 0);
-    const incomeTransactions = transactions.filter(
-      (t) => t.type === TransactionType.INCOME
-    ).length;
-    const expenseTransactions = transactions.filter(
-      (t) => t.type === TransactionType.EXPENSE
-    ).length;
+  // --- Handlers ---
 
-    return {
-      totalIncome,
-      totalExpense,
-      balance: totalIncome - totalExpense,
-      incomeTransactions,
-      expenseTransactions,
-    };
-  }, [transactions]);
-
-  // 3. Dashboard Data
-  const dashboardData = useMemo(() => {
-    const now = new Date();
-
-    const filterByMode = (t: Transaction) => {
-      const tDate = new Date(t.date);
-      tDate.setHours(0, 0, 0, 0);
-
-      if (dashboardMode === "diario") {
-        return t.date === formatDate(now);
-      }
-
-      if (dashboardMode === "semanal") {
-        const dayOfWeek = now.getDay();
-        const diffToMonday = dayOfWeek === 0 ? 6 : dayOfWeek - 1;
-        const monday = new Date(now);
-        monday.setDate(now.getDate() - diffToMonday);
-        monday.setHours(0, 0, 0, 0);
-
-        const sunday = new Date(monday);
-        sunday.setDate(monday.getDate() + 6);
-        sunday.setHours(23, 59, 59, 999);
-
-        return tDate >= monday && tDate <= sunday;
-      }
-
-      const monthStart = new Date(now.getFullYear(), now.getMonth(), 1);
-      const monthEnd = new Date(now.getFullYear(), now.getMonth() + 1, 0);
-      monthStart.setHours(0, 0, 0, 0);
-      monthEnd.setHours(23, 59, 59, 999);
-
-      return tDate >= monthStart && tDate <= monthEnd;
-    };
-
-    const filteredTransactions = transactions.filter(filterByMode);
-
-    const totalIncome = filteredTransactions
-      .filter((t) => t.type === TransactionType.INCOME)
-      .reduce((acc, curr) => acc + curr.amount, 0);
-    const totalExpense = filteredTransactions
-      .filter((t) => t.type === TransactionType.EXPENSE)
-      .reduce((acc, curr) => acc + curr.amount, 0);
-    const balance = totalIncome - totalExpense;
-
-    const dailyCosts = filteredTransactions
-      .filter(
-        (t) => t.type === TransactionType.EXPENSE && t.isDailyCost
-      )
-      .reduce((acc, curr) => acc + curr.amount, 0);
-
-    let daysWorked = 1;
-    if (dashboardMode === "semanal") {
-      const validWeekDays = [1, 2, 3, 4, 5, 6];
-      daysWorked = validWeekDays.length;
-    } else if (dashboardMode === "mensal") {
-      daysWorked = monthlyWorkingDays || 26;
-    }
-
-    const netProfit = balance;
-    const averageDailyProfit =
-      dashboardMode === "diario" ? netProfit : netProfit / daysWorked;
-
-    const goalProgress = goals.dailyTotalGoal
-      ? (averageDailyProfit / goals.dailyTotalGoal) * 100
-      : 0;
-
-    let goalStatusMessage = "";
-    let goalStatusColor = "";
-
-    if (!goals.hasGoals) {
-      goalStatusMessage =
-        "Defina sua meta mensal no painel de Configurações.";
-      goalStatusColor = "gray";
-    } else if (!goals.hasBills) {
-      if (averageDailyProfit < goals.dailyTotalGoal * 0.5) {
-        goalStatusMessage =
-          "Atenção: abaixo da metade da meta diária.";
-        goalStatusColor = "red";
-      } else if (
-        averageDailyProfit >= goals.dailyTotalGoal * 0.5 &&
-        averageDailyProfit < goals.dailyTotalGoal
-      ) {
-        goalStatusMessage = "Continue! Você está se aproximando da meta.";
-        goalStatusColor = "orange";
-      } else {
-        goalStatusMessage = "Parabéns! Meta diária de faturamento batida.";
-        goalStatusColor = "green";
-      }
-    } else {
-      if (averageDailyProfit < goals.dailyBillsGoal) {
-        goalStatusMessage =
-          "Atenção: abaixo da meta mínima para cobrir as contas do mês.";
-        goalStatusColor = "red";
-      } else if (
-        averageDailyProfit >= goals.dailyBillsGoal &&
-        averageDailyProfit < goals.dailyTotalGoal
-      ) {
-        goalStatusMessage =
-          "Continue! Já cobre as contas, siga em busca do salário desejado.";
-        goalStatusColor = "orange";
-      } else {
-        goalStatusMessage =
-          "Parabéns! Cobre as contas e seu salário desejado neste ritmo.";
-        goalStatusColor = "green";
-      }
-    }
-
-    return {
-      totalIncome,
-      totalExpense,
-      balance,
-      dailyCosts,
-      netProfit,
-      averageDailyProfit,
-      goalProgress: Math.min(100, Math.max(0, goalProgress)),
-      goalStatusMessage,
-      goalStatusColor,
-    };
-  }, [
-    transactions,
-    dashboardMode,
-    monthlyWorkingDays,
-    goals.dailyTotalGoal,
-    goals.dailyBillsGoal,
-    goals.hasGoals,
-    goals.hasBills,
-  ]);
-
-  const dailyIncomeExpenseData = useMemo(() => {
-    const todayStr = formatDate(new Date());
-    const todaysTransactions = transactions.filter(
-      (t) => t.date === todayStr
-    );
-
-    return [
-      {
-        name: "Entradas",
-        value: todaysTransactions
-          .filter((t) => t.type === TransactionType.INCOME)
-          .reduce((acc, curr) => acc + curr.amount, 0),
-      },
-      {
-        name: "Saídas",
-        value: todaysTransactions
-          .filter((t) => t.type === TransactionType.EXPENSE)
-          .reduce((acc, curr) => acc + curr.amount, 0),
-      },
-    ];
-  }, [transactions]);
-
-  const dailyExpensesBreakdownData = useMemo(() => {
-    const todayStr = formatDate(new Date());
-    const todaysExpenses = transactions.filter(
-      (t) =>
-        t.date === todayStr && t.type === TransactionType.EXPENSE
-    );
-
-    const byDescription: Record<string, number> = {};
-    todaysExpenses.forEach((t) => {
-      byDescription[t.description] =
-        (byDescription[t.description] || 0) + t.amount;
-    });
-
-    return Object.entries(byDescription).map(([desc, value]) => ({
-      name: desc,
-      value,
-    }));
-  }, [transactions]);
-
-  const shiftsSummary = useMemo(() => {
-    const now = new Date();
-    const todayStr = formatDate(now);
-
-    const todayShifts = shifts.filter((shift) => shift.date === todayStr);
-    const weekShifts = shifts.filter((shift) => {
-      const shiftDate = new Date(shift.date);
-      shiftDate.setHours(0, 0, 0, 0);
-      const currentDay = now.getDay();
-      const diffToMonday = currentDay === 0 ? 6 : currentDay - 1;
-      const monday = new Date(now);
-      monday.setDate(now.getDate() - diffToMonday);
-      monday.setHours(0, 0, 0, 0);
-      const sunday = new Date(monday);
-      sunday.setDate(monday.getDate() + 6);
-      sunday.setHours(23, 59, 59, 999);
-      return shiftDate >= monday && shiftDate <= sunday;
-    });
-
-    const todayTotalRevenue = todayShifts.reduce(
-      (acc, shift) => acc + shift.totalAmount,
-      0
-    );
-    const todayTotalKm = todayShifts.reduce(
-      (acc, shift) => acc + shift.totalKm,
-      0
-    );
-    const todayAverageTicket =
-      todayShifts.length > 0
-        ? todayTotalRevenue / todayShifts.length
-        : 0;
-
-    const weekTotalRevenue = weekShifts.reduce(
-      (acc, shift) => acc + shift.totalAmount,
-      0
-    );
-    const weekTotalKm = weekShifts.reduce(
-      (acc, shift) => acc + shift.totalKm,
-      0
-    );
-
-    const todayPlatformTotals = todayShifts.reduce(
-      (acc, shift) => ({
-        uber: acc.uber + shift.platformTotals.uber,
-        ninedine: acc.ninedine + shift.platformTotals.ninedine,
-        indriver: acc.indriver + shift.platformTotals.indriver,
-        private: acc.private + shift.platformTotals.private,
-      }),
-      { uber: 0, ninedine: 0, indriver: 0, private: 0 }
-    );
-
-    const weeklyPlatformTotals = weekShifts.reduce(
-      (acc, shift) => ({
-        uber: acc.uber + shift.platformTotals.uber,
-        ninedine: acc.ninedine + shift.platformTotals.ninedine,
-        indriver: acc.indriver + shift.platformTotals.indriver,
-        private: acc.private + shift.platformTotals.private,
-      }),
-      { uber: 0, ninedine: 0, indriver: 0, private: 0 }
-    );
-
-    const platformChartData = [
-      {
-        name: "Uber",
-        today: todayPlatformTotals.uber,
-        week: weeklyPlatformTotals.uber,
-      },
-      {
-        name: "99",
-        today: todayPlatformTotals.ninedine,
-        week: weeklyPlatformTotals.ninedine,
-      },
-      {
-        name: "InDrive",
-        today: todayPlatformTotals.indriver,
-        week: weeklyPlatformTotals.indriver,
-      },
-      {
-        name: "Particular",
-        today: todayPlatformTotals.private,
-        week: weeklyPlatformTotals.private,
-      },
-    ];
-
-    return {
-      todayTotalRevenue,
-      todayTotalKm,
-      todayAverageTicket,
-      weekTotalRevenue,
-      weekTotalKm,
-      platformChartData,
-    };
-  }, [shifts]);
-
-  const filteredShifts = useMemo(() => {
-    const start = new Date(shiftFilter.startDate);
-    const end = new Date(shiftFilter.endDate);
-    end.setHours(23, 59, 59, 999);
-
-    return shifts.filter((shift) => {
-      const shiftDate = new Date(shift.date);
-      shiftDate.setHours(0, 0, 0, 0);
-      return shiftDate >= start && shiftDate <= end;
-    });
-  }, [shifts, shiftFilter]);
-
-  const billsSummary = useMemo(() => {
-    const now = new Date();
-    const currentMonthStr = `${now.getFullYear()}-${String(
-      now.getMonth() + 1
-    ).padStart(2, "0")}`;
-
-    const monthlyBills = bills.filter((b) =>
-      b.dueDate.startsWith(currentMonthStr)
-    );
-
-    const totalBillsAmount = monthlyBills.reduce(
-      (acc, b) => acc + b.amount,
-      0
-    );
-    const paidBillsAmount = monthlyBills
-      .filter((b) => b.isPaid)
-      .reduce((acc, b) => acc + b.amount, 0);
-    const pendingBillsAmount = totalBillsAmount - paidBillsAmount;
-
-    const daysLeftInMonth = (() => {
-      const lastDay = new Date(
-        now.getFullYear(),
-        now.getMonth() + 1,
-        0
-      );
-      const diffTime = lastDay.getTime() - now.getTime();
-      return Math.ceil(diffTime / (1000 * 60 * 60 * 24));
-    })();
-
-    return {
-      totalBillsAmount,
-      paidBillsAmount,
-      pendingBillsAmount,
-      daysLeftInMonth,
-    };
-  }, [bills]);
-
-  const handleSaveTransaction = (transaction: Transaction) => {
-    setTransactions((prev) => [...prev, transaction]);
-  };
-
-  const handleStartShift = (newShift: Shift) => {
-    setActiveShift(newShift);
-    setShifts((prev) => [...prev, newShift]);
-  };
-
-  const handleEndShift = (shiftId: string) => {
-    setShifts((prev) =>
-      prev.map((shift) =>
-        shift.id === shiftId
-          ? {
-              ...shift,
-              endTime: new Date().toTimeString().substring(0, 5),
-            }
-          : shift
-      )
-    );
-    setActiveShift(null);
-  };
-
-  const handleAddShiftEntry = (entry: ShiftEntry) => {
-    if (!activeShift) return;
-
-    const updatedShift: Shift = {
-      ...activeShift,
-      entries: [...activeShift.entries, entry],
-      totalAmount:
-        activeShift.totalAmount +
-        (entry.rideType === "km" ? 0 : entry.amount),
-      totalKm:
-        activeShift.totalKm + (entry.km ? entry.km : 0),
-      platformTotals: {
-        ...activeShift.platformTotals,
-        ...(entry.rideType !== "km"
-          ? {
-              [entry.rideType]:
-                activeShift.platformTotals[entry.rideType] +
-                entry.amount,
-            }
-          : {}),
-      },
-    };
-
-    setActiveShift(updatedShift);
-    setShifts((prev) =>
-      prev.map((shift) =>
-        shift.id === updatedShift.id ? updatedShift : shift
-      )
-    );
-  };
-
-  const handleSaveBill = (bill: Bill) => {
-    setBills((prev) => {
-      const exists = prev.find((b) => b.id === bill.id);
-      if (exists) {
-        return prev.map((b) => (b.id === bill.id ? bill : b));
-      }
-      return [...prev, bill];
-    });
-  };
-
-  const handleDeleteBill = (billId: string) => {
-    setBills((prev) => prev.filter((b) => b.id !== billId));
-  };
-
-  const handleToggleBillPaid = (billId: string) => {
-    setBills((prev) =>
-      prev.map((b) =>
-        b.id === billId ? { ...b, isPaid: !b.isPaid } : b
-      )
-    );
-  };
-
-  const handleSaveWorkDays = (days: number[]) => {
-    setWorkDays(days);
+  const handleLogout = async () => {
+    await logoutUser();
+    setTransactions([]);
+    setBills([]);
+    setShiftState({ isActive: false, isPaused: false, startTime: null, elapsedSeconds: 0, earnings: { uber: 0, n99: 0, indrive: 0, private: 0 }, expenses: 0, expenseList: [], km: 0 });
   };
 
   const handleAddCategory = (name: string) => {
-    if (!name.trim()) return;
-    setCategories((prev) => [...prev, name.trim()]);
+    if (name && !categories.includes(name)) {
+      setCategories([...categories, name]);
+    }
   };
 
   const handleEditCategory = (oldName: string, newName: string) => {
-    setCategories((prev) =>
-      prev.map((cat) => (cat === oldName ? newName : cat))
-    );
+    if (!newName || categories.includes(newName)) return;
+    setCategories(prev => prev.map(c => c === oldName ? newName : c));
+    setTransactions(prev => prev.map(t => t.category === oldName ? { ...t, category: newName } : t));
+    setBills(prev => prev.map(b => b.category === oldName ? { ...b, category: newName } : b));
   };
 
   const handleDeleteCategory = (name: string) => {
-    setCategories((prev) => prev.filter((cat) => cat !== name));
+    setCategories(prev => prev.filter(c => c !== name));
   };
 
-  const handleSaveGoals = (salary: number, days: number) => {
-    setMonthlySalaryGoal(salary);
-    setMonthlyWorkingDays(days);
+  const handleOpenEntry = (category: 'uber' | '99' | 'indrive' | 'private' | 'km' | 'expense') => {
+    if (!shiftState.isActive || shiftState.isPaused) return;
+    setEntryCategory(category);
+    setEntryModalOpen(true);
   };
 
-  const handleLogin = () => {
-    if (!loginName.trim()) {
-      setLoginError("Por favor, digite seu nome.");
-      return;
+  const handleEntrySave = (value: number, description?: string, expenseCategory?: ExpenseCategory) => {
+    if (!entryCategory) return;
+    
+    setShiftState(prev => {
+      const newState = { ...prev };
+      
+      // Substituição de valores para Apps
+      if (entryCategory === 'uber') newState.earnings.uber = value;
+      else if (entryCategory === '99') newState.earnings.n99 = value;
+      else if (entryCategory === 'indrive') newState.earnings.indrive = value;
+      else if (entryCategory === 'private') newState.earnings.private = value;
+      
+      // Soma para KM e Despesas
+      else if (entryCategory === 'km') newState.km += value;
+      else if (entryCategory === 'expense') {
+        newState.expenses += value;
+        if (description && expenseCategory) {
+          newState.expenseList = [
+            ...newState.expenseList,
+            { amount: value, description, category: expenseCategory, timestamp: Date.now() }
+          ];
+        }
+      }
+      return newState;
+    });
+  };
+
+  const handleStartShift = () => {
+    setShiftState(prev => ({ ...prev, isActive: true, isPaused: false, startTime: Date.now() }));
+  };
+
+  const handlePauseShift = () => {
+    setShiftState(prev => ({ ...prev, isPaused: !prev.isPaused }));
+  };
+
+  const handleStopShift = () => {
+    setShiftState(prev => ({ ...prev, isPaused: true }));
+    setIsShiftModalOpen(true);
+  };
+
+  const handleEditStartTime = () => {
+    if (!shiftState.isActive) return;
+    const currentStart = shiftState.startTime ? new Date(shiftState.startTime) : new Date();
+    const defaultTime = `${String(currentStart.getHours()).padStart(2, '0')}:${String(currentStart.getMinutes()).padStart(2, '0')}`;
+    const newTimeStr = window.prompt("Ajustar horário de início (HH:mm):", defaultTime);
+    
+    if (newTimeStr && /^\d{2}:\d{2}$/.test(newTimeStr)) {
+      const [h, m] = newTimeStr.split(':').map(Number);
+      const newStartDate = new Date();
+      newStartDate.setHours(h, m, 0, 0);
+      const newElapsed = Math.floor((Date.now() - newStartDate.getTime()) / 1000);
+      setShiftState(prev => ({
+        ...prev,
+        startTime: newStartDate.getTime(),
+        elapsedSeconds: Math.max(0, newElapsed)
+      }));
     }
+  };
 
-    const generatedUser: User = {
-      id: "1",
-      name: loginName,
-      plan: "free",
+  const formatTime = (seconds: number) => {
+    const h = Math.floor(seconds / 3600);
+    const m = Math.floor((seconds % 3600) / 60);
+    return `${h}h ${m.toString().padStart(2, '0')}m`;
+  };
+
+  const formatCurrency = (val: number, forceShow = false) => {
+    if (!showValues && !forceShow) return 'R$ ****';
+    return new Intl.NumberFormat('pt-BR', { style: 'currency', currency: 'BRL' }).format(val);
+  };
+
+  // --- Calculations ---
+  const stats = useMemo(() => {
+    const totalIncome = transactions.filter(t => t.type === TransactionType.INCOME).reduce((acc, curr) => acc + curr.amount, 0);
+    const totalExpense = transactions.filter(t => t.type === TransactionType.EXPENSE).reduce((acc, curr) => acc + curr.amount, 0);
+    const incomeTransactions = transactions.filter(t => t.type === TransactionType.INCOME);
+    const totalKm = incomeTransactions.reduce((acc, curr) => acc + (curr.mileage || 0), 0);
+    const totalHours = incomeTransactions.reduce((acc, curr) => acc + (curr.durationHours || 0), 0);
+    const earningsPerKm = totalKm > 0 ? totalIncome / totalKm : 0;
+    const earningsPerHour = totalHours > 0 ? totalIncome / totalHours : 0;
+    const netProfit = totalIncome - totalExpense;
+    const profitMargin = totalIncome > 0 ? (netProfit / totalIncome) * 100 : 0;
+    const pendingBillsTotal = bills.filter(b => !b.isPaid).reduce((acc, b) => acc + b.amount, 0);
+    const sortedUnpaidBills = [...bills].filter(b => !b.isPaid).sort((a, b) => a.dueDate.localeCompare(b.dueDate));
+    const todayStr = getTodayString();
+    const earningsToday = transactions.filter(t => t.type === TransactionType.INCOME && t.date === todayStr).reduce((acc, t) => acc + t.amount, 0);
+
+    let maxRequiredDailyRate = 0;
+    let goalExplanation = "";
+    let cumulativeBillTotal = 0;
+    const startingCash = Math.max(0, netProfit);
+    const todayDate = new Date();
+    todayDate.setHours(0, 0, 0, 0);
+
+    if (sortedUnpaidBills.length === 0) {
+      maxRequiredDailyRate = 0;
+      goalExplanation = "Parabéns! Nenhuma conta pendente.";
+    } else {
+      for (const bill of sortedUnpaidBills) {
+        cumulativeBillTotal += bill.amount;
+        const totalNeededForThisMilestone = cumulativeBillTotal - startingCash;
+        if (totalNeededForThisMilestone <= 0) continue;
+        const dueDate = parseDateFromInput(bill.dueDate);
+        let workingDays = 0;
+        const tempDate = new Date(todayDate);
+        if (dueDate < todayDate) workingDays = 1;
+        else {
+          const iterDate = new Date(tempDate);
+          while (iterDate <= dueDate) {
+            if (workDays.includes(iterDate.getDay())) workingDays++;
+            iterDate.setDate(iterDate.getDate() + 1);
+          }
+        }
+        if (workingDays === 0) workingDays = 1;
+        const requiredRateForThisBill = totalNeededForThisMilestone / workingDays;
+        if (requiredRateForThisBill > maxRequiredDailyRate) {
+          maxRequiredDailyRate = requiredRateForThisBill;
+          const dayLabel = workingDays === 1 ? 'dia' : 'dias';
+          goalExplanation = `Foco: Quitar ${bill.description} em ${workingDays} ${dayLabel}.`;
+        }
+      }
+    }
+    if (maxRequiredDailyRate > 0 && !goalExplanation) goalExplanation = "Calculada para garantir o pagamento de todas as contas.";
+    
+    return { totalIncome, totalExpense, netProfit, profitMargin, earningsPerKm, earningsPerHour, dailyGoal: maxRequiredDailyRate, pendingBillsTotal, earningsToday, goalExplanation };
+  }, [transactions, bills, workDays]);
+
+  const billsSummary = useMemo(() => ({
+    paid: bills.filter(b => b.isPaid).reduce((acc, b) => acc + b.amount, 0),
+    pending: bills.filter(b => !b.isPaid).reduce((acc, b) => acc + b.amount, 0)
+  }), [bills]);
+
+  const filteredHistory = useMemo(() => {
+    const today = new Date();
+    today.setHours(0, 0, 0, 0);
+    let start: Date | null = null;
+    let end: Date | null = new Date(today);
+    end.setHours(23, 59, 59, 999);
+
+    if (historyRange === 'today') start = today;
+    else if (historyRange === 'week') {
+      const d = new Date(today);
+      const day = d.getDay();
+      const diff = d.getDate() - day + (day === 0 ? -6 : 1);
+      d.setDate(diff);
+      start = d;
+    } else if (historyRange === 'month') {
+      const d = new Date(today);
+      d.setDate(1);
+      start = d;
+    } else if (historyRange === 'custom') {
+      if (historyCustomStart && historyCustomEnd) {
+        start = parseDateFromInput(historyCustomStart);
+        end = parseDateFromInput(historyCustomEnd);
+        end.setHours(23, 59, 59, 999);
+      } else return transactions;
+    } else return transactions;
+
+    return transactions.filter(t => {
+      const tDate = parseDateFromInput(t.date);
+      return start ? (tDate >= start && tDate <= end!) : true;
+    }).sort((a, b) => new Date(b.date).getTime() - new Date(a.date).getTime());
+  }, [transactions, historyRange, historyCustomStart, historyCustomEnd]);
+
+  const historySummary = useMemo(() => {
+    const income = filteredHistory.filter(t => t.type === TransactionType.INCOME).reduce((acc, t) => acc + t.amount, 0);
+    const expense = filteredHistory.filter(t => t.type === TransactionType.EXPENSE).reduce((acc, t) => acc + t.amount, 0);
+    return { income, expense, balance: income - expense };
+  }, [filteredHistory]);
+
+  const currentShiftTotal = shiftState.earnings.uber + shiftState.earnings.n99 + shiftState.earnings.indrive + shiftState.earnings.private;
+  const currentShiftLiquid = currentShiftTotal - shiftState.expenses;
+  const currentShiftMinutes = Math.floor(shiftState.elapsedSeconds / 60);
+  const currentShiftHoursFromMinutes = currentShiftMinutes / 60;
+  const currentShiftRph = (currentShiftMinutes > 0) ? currentShiftTotal / currentShiftHoursFromMinutes : 0;
+  const currentShiftRpk = shiftState.km > 0 ? currentShiftTotal / shiftState.km : 0;
+  const currentShiftHoursPrecise = shiftState.elapsedSeconds / 3600;
+
+  const pieData = useMemo(() => [
+    { name: 'Ganhos', value: stats.totalIncome, color: '#3b82f6' },
+    { name: 'Despesas', value: stats.totalExpense, color: '#f43f5e' }
+  ], [stats]);
+
+  // --- Actions ---
+
+  const handleAddTransaction = (data: any) => {
+    const newTransaction: Transaction = { id: Math.random().toString(36).substr(2, 9), ...data };
+    setTransactions(prev => [newTransaction, ...prev]);
+  };
+
+  const handleSaveShift = (data: { amount: number; description: string; date: string; mileage: number; durationHours: number }) => {
+    const incomeTransaction: Transaction = {
+      id: Math.random().toString(36).substr(2, 9),
+      type: TransactionType.INCOME,
+      category: undefined,
+      ...data
     };
+    const expenseTransactions: Transaction[] = shiftState.expenseList.map(exp => ({
+      id: Math.random().toString(36).substr(2, 9),
+      type: TransactionType.EXPENSE,
+      amount: exp.amount,
+      description: `${exp.description} (Turno)`,
+      category: exp.category,
+      date: data.date
+    }));
+    
+    const newTransactions = [incomeTransaction, ...expenseTransactions, ...transactions];
+    setTransactions(newTransactions);
+    
+    // Reseta o estado do turno (inativo)
+    const resetShiftState = { isActive: false, isPaused: false, startTime: null, elapsedSeconds: 0, earnings: { uber: 0, n99: 0, indrive: 0, private: 0 }, expenses: 0, expenseList: [], km: 0 };
+    setShiftState(resetShiftState);
 
-    setUser(generatedUser);
-    setIsLoggedIn(true);
-    setLoginError(null);
-  };
-
-  const handleLogout = () => {
-    setIsLoggedIn(false);
-    setUser(null);
-    localStorage.removeItem("user");
-  };
-
-  const renderActiveTab = () => {
-    switch (activeTab) {
-      case "dashboard":
-        return (
-          <div className="dashboard" ref={dashboardRef}>
-            <div className="dashboard-header">
-              <h2>Painel de Controle</h2>
-              <div className="dashboard-mode-toggle">
-                <button
-                  className={
-                    dashboardMode === "diario"
-                      ? "active"
-                      : ""
-                  }
-                  onClick={() => setDashboardMode("diario")}
-                >
-                  Diário
-                </button>
-                <button
-                  className={
-                    dashboardMode === "semanal"
-                      ? "active"
-                      : ""
-                  }
-                  onClick={() => setDashboardMode("semanal")}
-                >
-                  Semanal
-                </button>
-                <button
-                  className={
-                    dashboardMode === "mensal"
-                      ? "active"
-                      : ""
-                  }
-                  onClick={() => setDashboardMode("mensal")}
-                >
-                  Mensal
-                </button>
-              </div>
-            </div>
-
-            <div className="dashboard-grid">
-              <div className="card">
-                <h3>Resumo Financeiro</h3>
-                <div className="card-content grid-two-columns">
-                  <div>
-                    <p>
-                      <strong>Entradas:</strong>{" "}
-                      {formatCurrency(dashboardData.totalIncome)}
-                    </p>
-                    <p>
-                      <strong>Saídas:</strong>{" "}
-                      {formatCurrency(dashboardData.totalExpense)}
-                    </p>
-                    <p>
-                      <strong>Saldo:</strong>{" "}
-                      {formatCurrency(dashboardData.balance)}
-                    </p>
-                  </div>
-                  <div>
-                    <p>
-                      <strong>Custos Diários:</strong>{" "}
-                      {formatCurrency(dashboardData.dailyCosts)}
-                    </p>
-                    <p>
-                      <strong>Lucro Líquido:</strong>{" "}
-                      {formatCurrency(dashboardData.netProfit)}
-                    </p>
-                    <p>
-                      <strong>Média Diária:</strong>{" "}
-                      {formatCurrency(
-                        dashboardData.averageDailyProfit
-                      )}
-                    </p>
-                  </div>
-                </div>
-              </div>
-
-              <div className="card">
-                <h3>Meta Diária</h3>
-                <div className="card-content">
-                  <p>
-                    <strong>Meta para contas (média/dia):</strong>{" "}
-                    {formatCurrency(goals.dailyBillsGoal)}
-                  </p>
-                  <p>
-                    <strong>Meta de faturamento (média/dia):</strong>{" "}
-                    {formatCurrency(goals.dailySalaryGoal)}
-                  </p>
-                  <div className="goal-progress-bar">
-                    <div
-                      className="goal-progress-fill"
-                      style={{
-                        width: `${dashboardData.goalProgress}%`,
-                        backgroundColor:
-                          dashboardData.goalStatusColor,
-                      }}
-                    />
-                  </div>
-                  <p className="goal-status-message">
-                    {dashboardData.goalStatusMessage}
-                  </p>
-                </div>
-              </div>
-
-              <div className="card">
-                <h3>Gráfico de Entradas x Saídas (Hoje)</h3>
-                <div className="card-content chart-container">
-                  <ResponsiveContainer width="100%" height={200}>
-                    <BarChart data={dailyIncomeExpenseData}>
-                      <CartesianGrid strokeDasharray="3 3" />
-                      <XAxis dataKey="name" />
-                      <YAxis tickFormatter={currencyFormatter} />
-                      <Tooltip formatter={currencyFormatter} />
-                      <Legend />
-                      <Bar dataKey="value" name="Valor">
-                        {dailyIncomeExpenseData.map((entry, index) => (
-                          <Cell
-                            key={`cell-${index}`}
-                            fill={
-                              entry.name === "Entradas"
-                                ? "#4caf50"
-                                : "#f44336"
-                            }
-                          />
-                        ))}
-                      </Bar>
-                    </BarChart>
-                  </ResponsiveContainer>
-                </div>
-              </div>
-
-              <div className="card">
-                <h3>Distribuição de Despesas (Hoje)</h3>
-                <div className="card-content chart-container">
-                  {dailyExpensesBreakdownData.length > 0 ? (
-                    <ResponsiveContainer width="100%" height={200}>
-                      <PieChart>
-                        <Pie
-                          data={dailyExpensesBreakdownData}
-                          dataKey="value"
-                          nameKey="name"
-                          outerRadius={80}
-                          label
-                        >
-                          {dailyExpensesBreakdownData.map(
-                            (_entry, index) => (
-                              <Cell
-                                key={`cell-${index}`}
-                                fill={`hsl(${
-                                  (index * 60) % 360
-                                }, 70%, 50%)`}
-                              />
-                            )
-                          )}
-                        </Pie>
-                        <Tooltip formatter={currencyFormatter} />
-                      </PieChart>
-                    </ResponsiveContainer>
-                  ) : (
-                    <p>Sem despesas registradas hoje.</p>
-                  )}
-                </div>
-              </div>
-
-              <div className="card">
-                <h3>Resumo de Turnos</h3>
-                <div className="card-content grid-two-columns">
-                  <div>
-                    <p>
-                      <strong>Faturamento Hoje:</strong>{" "}
-                      {formatCurrency(
-                        shiftsSummary.todayTotalRevenue
-                      )}
-                    </p>
-                    <p>
-                      <strong>KM Rodados Hoje:</strong>{" "}
-                      {shiftsSummary.todayTotalKm.toFixed(1)} km
-                    </p>
-                    <p>
-                      <strong>Ticket Médio Hoje:</strong>{" "}
-                      {formatCurrency(
-                        shiftsSummary.todayAverageTicket
-                      )}
-                    </p>
-                  </div>
-                  <div>
-                    <p>
-                      <strong>Faturamento na Semana:</strong>{" "}
-                      {formatCurrency(
-                        shiftsSummary.weekTotalRevenue
-                      )}
-                    </p>
-                    <p>
-                      <strong>KM na Semana:</strong>{" "}
-                      {shiftsSummary.weekTotalKm.toFixed(1)} km
-                    </p>
-                  </div>
-                </div>
-              </div>
-
-              <div className="card">
-                <h3>Faturamento por Plataforma (Hoje x Semana)</h3>
-                <div className="card-content chart-container">
-                  <ResponsiveContainer width="100%" height={200}>
-                    <BarChart data={shiftsSummary.platformChartData}>
-                      <CartesianGrid strokeDasharray="3 3" />
-                      <XAxis dataKey="name" />
-                      <YAxis tickFormatter={currencyFormatter} />
-                      <Tooltip formatter={currencyFormatter} />
-                      <Legend />
-                      <Bar dataKey="today" name="Hoje" fill="#2196f3" />
-                      <Bar dataKey="week" name="Semana" fill="#9c27b0" />
-                    </BarChart>
-                  </ResponsiveContainer>
-                </div>
-              </div>
-
-              <div className="card">
-                <h3>Resumo de Contas do Mês</h3>
-                <div className="card-content grid-two-columns">
-                  <div>
-                    <p>
-                      <strong>Total de Contas:</strong>{" "}
-                      {formatCurrency(billsSummary.totalBillsAmount)}
-                    </p>
-                    <p>
-                      <strong>Já Pagas:</strong>{" "}
-                      {formatCurrency(billsSummary.paidBillsAmount)}
-                    </p>
-                    <p>
-                      <strong>Em Aberto:</strong>{" "}
-                      {formatCurrency(
-                        billsSummary.pendingBillsAmount
-                      )}
-                    </p>
-                  </div>
-                  <div>
-                    <p>
-                      <strong>Dias Restantes no Mês:</strong>{" "}
-                      {billsSummary.daysLeftInMonth}
-                    </p>
-                    <p>
-                      <strong>
-                        Média diária necessária para quitar:
-                      </strong>{" "}
-                      {formatCurrency(
-                        billsSummary.pendingBillsAmount /
-                          (billsSummary.daysLeftInMonth || 1)
-                      )}
-                    </p>
-                  </div>
-                </div>
-              </div>
-            </div>
-          </div>
-        );
-      case "shift":
-        return (
-          <div className="shift-container">
-            <div className="card">
-              <h2>Turno Atual</h2>
-              <div className="card-content">
-                {activeShift ? (
-                  <>
-                    <p>
-                      <strong>Iniciado em:</strong>{" "}
-                      {activeShift.date} às {activeShift.startTime}
-                    </p>
-                    <p>
-                      <strong>Total faturado:</strong>{" "}
-                      {formatCurrency(activeShift.totalAmount)}
-                    </p>
-                    <p>
-                      <strong>Total KM:</strong>{" "}
-                      {activeShift.totalKm.toFixed(1)} km
-                    </p>
-                    <div className="platform-totals">
-                      <p>
-                        <strong>Uber:</strong>{" "}
-                        {formatCurrency(
-                          activeShift.platformTotals.uber
-                        )}
-                      </p>
-                      <p>
-                        <strong>99:</strong>{" "}
-                        {formatCurrency(
-                          activeShift.platformTotals.ninedine
-                        )}
-                      </p>
-                      <p>
-                        <strong>InDrive:</strong>{" "}
-                        {formatCurrency(
-                          activeShift.platformTotals.indriver
-                        )}
-                      </p>
-                      <p>
-                        <strong>Particular:</strong>{" "}
-                        {formatCurrency(
-                          activeShift.platformTotals.private
-                        )}
-                      </p>
-                    </div>
-                    <div className="shift-actions">
-                      <button
-                        className="btn-secondary"
-                        onClick={() =>
-                          setEntryModalOpen(true)
-                        }
-                      >
-                        Lançar Corrida / KM
-                      </button>
-                      <button
-                        className="btn-danger"
-                        onClick={() =>
-                          setShiftModalOpen(true)
-                        }
-                      >
-                        Encerrar Turno
-                      </button>
-                    </div>
-                    <div className="shift-entries">
-                      <h3>Lançamentos do Turno</h3>
-                      {activeShift.entries.length === 0 ? (
-                        <p>Nenhum lançamento ainda.</p>
-                      ) : (
-                        <ul>
-                          {activeShift.entries.map(
-                            (entry, index) => (
-                              <li key={index}>
-                                <span>
-                                  {entry.rideType.toUpperCase()} -{" "}
-                                  {entry.km
-                                    ? `${entry.km.toFixed(
-                                        1
-                                      )} km`
-                                    : ""}
-                                </span>
-                                {entry.rideType !== "km" && (
-                                  <span>
-                                    {" - "}
-                                    {formatCurrency(
-                                      entry.amount
-                                    )}
-                                  </span>
-                                )}
-                                {entry.description && (
-                                  <span>
-                                    {" - "}
-                                    {entry.description}
-                                  </span>
-                                )}
-                              </li>
-                            )
-                          )}
-                        </ul>
-                      )}
-                    </div>
-                  </>
-                ) : (
-                  <>
-                    <p>Nenhum turno ativo no momento.</p>
-                    <button
-                      className="btn-primary"
-                      onClick={() => setShiftModalOpen(true)}
-                    >
-                      Iniciar Novo Turno
-                    </button>
-                  </>
-                )}
-              </div>
-            </div>
-          </div>
-        );
-      case "reports":
-        return (
-          <div className="reports-container">
-            <div className="card">
-              <h2>Relatórios de Turnos</h2>
-              <div className="card-content">
-                <div className="filter-row">
-                  <label>
-                    Data Inicial:
-                    <input
-                      type="date"
-                      value={shiftFilter.startDate}
-                      onChange={(e) =>
-                        setShiftFilter((prev) => ({
-                          ...prev,
-                          startDate: e.target.value,
-                        }))
-                      }
-                    />
-                  </label>
-                  <label>
-                    Data Final:
-                    <input
-                      type="date"
-                      value={shiftFilter.endDate}
-                      onChange={(e) =>
-                        setShiftFilter((prev) => ({
-                          ...prev,
-                          endDate: e.target.value,
-                        }))
-                      }
-                    />
-                  </label>
-                </div>
-                {filteredShifts.length === 0 ? (
-                  <p>Nenhum turno encontrado no período.</p>
-                ) : (
-                  <table className="data-table">
-                    <thead>
-                      <tr>
-                        <th>Data</th>
-                        <th>Início</th>
-                        <th>Fim</th>
-                        <th>Faturamento</th>
-                        <th>KM</th>
-                        <th>Uber</th>
-                        <th>99</th>
-                        <th>InDrive</th>
-                        <th>Particular</th>
-                      </tr>
-                    </thead>
-                    <tbody>
-                      {filteredShifts.map((shift) => (
-                        <tr key={shift.id}>
-                          <td>{shift.date}</td>
-                          <td>{shift.startTime}</td>
-                          <td>{shift.endTime || "-"}</td>
-                          <td>
-                            {formatCurrency(shift.totalAmount)}
-                          </td>
-                          <td>{shift.totalKm.toFixed(1)}</td>
-                          <td>
-                            {formatCurrency(
-                              shift.platformTotals.uber
-                            )}
-                          </td>
-                          <td>
-                            {formatCurrency(
-                              shift.platformTotals.ninedine
-                            )}
-                          </td>
-                          <td>
-                            {formatCurrency(
-                              shift.platformTotals.indriver
-                            )}
-                          </td>
-                          <td>
-                            {formatCurrency(
-                              shift.platformTotals.private
-                            )}
-                          </td>
-                        </tr>
-                      ))}
-                    </tbody>
-                  </table>
-                )}
-              </div>
-            </div>
-          </div>
-        );
-      case "bills":
-        return (
-          <div className="bills-container">
-            <div className="card">
-              <h2>Contas Mensais</h2>
-              <div className="card-content">
-                <div className="bills-summary">
-                  <p>
-                    <strong>Total:</strong>{" "}
-                    {formatCurrency(billsSummary.totalBillsAmount)}
-                  </p>
-                  <p>
-                    <strong>Pagas:</strong>{" "}
-                    {formatCurrency(billsSummary.paidBillsAmount)}
-                  </p>
-                  <p>
-                    <strong>Em Aberto:</strong>{" "}
-                    {formatCurrency(
-                      billsSummary.pendingBillsAmount
-                    )}
-                  </p>
-                  <p>
-                    <strong>Meta diária p/ contas:</strong>{" "}
-                    {formatCurrency(goals.dailyBillsGoal)}
-                  </p>
-                </div>
-                <button
-                  className="btn-primary"
-                  onClick={() => {
-                    setBillBeingEdited(null);
-                    setBillModalOpen(true);
-                  }}
-                >
-                  Nova Conta
-                </button>
-                {bills.length === 0 ? (
-                  <p>Nenhuma conta cadastrada.</p>
-                ) : (
-                  <table className="data-table">
-                    <thead>
-                      <tr>
-                        <th>Descrição</th>
-                        <th>Valor</th>
-                        <th>Categoria</th>
-                        <th>Vencimento</th>
-                        <th>Status</th>
-                        <th>Ações</th>
-                      </tr>
-                    </thead>
-                    <tbody>
-                      {bills.map((bill) => (
-                        <tr key={bill.id}>
-                          <td>{bill.description}</td>
-                          <td>{formatCurrency(bill.amount)}</td>
-                          <td>{bill.category}</td>
-                          <td>{bill.dueDate}</td>
-                          <td>
-                            {bill.isPaid ? "Paga" : "Em aberto"}
-                          </td>
-                          <td>
-                            <button
-                              className="btn-secondary btn-small"
-                              onClick={() => {
-                                setBillBeingEdited(bill);
-                                setBillModalOpen(true);
-                              }}
-                            >
-                              Editar
-                            </button>
-                            <button
-                              className="btn-secondary btn-small"
-                              onClick={() =>
-                                handleToggleBillPaid(bill.id)
-                              }
-                            >
-                              {bill.isPaid
-                                ? "Marcar como em aberto"
-                                : "Marcar como paga"}
-                            </button>
-                            <button
-                              className="btn-danger btn-small"
-                              onClick={() =>
-                                handleDeleteBill(bill.id)
-                              }
-                            >
-                              Excluir
-                            </button>
-                          </td>
-                        </tr>
-                      ))}
-                    </tbody>
-                  </table>
-                )}
-              </div>
-            </div>
-          </div>
-        );
-      case "history":
-        return (
-          <div className="history-container">
-            <div className="card">
-              <h2>Histórico de Lançamentos</h2>
-              <div className="card-content">
-                {transactions.length === 0 ? (
-                  <p>Nenhum lançamento registrado.</p>
-                ) : (
-                  <table className="data-table">
-                    <thead>
-                      <tr>
-                        <th>Data</th>
-                        <th>Tipo</th>
-                        <th>Descrição</th>
-                        <th>Valor</th>
-                      </tr>
-                    </thead>
-                    <tbody>
-                      {transactions.map((t) => (
-                        <tr key={t.id}>
-                          <td>{t.date}</td>
-                          <td>
-                            {t.type === TransactionType.INCOME
-                              ? "Entrada"
-                              : "Saída"}
-                          </td>
-                          <td>{t.description}</td>
-                          <td>{formatCurrency(t.amount)}</td>
-                        </tr>
-                      ))}
-                    </tbody>
-                  </table>
-                )}
-              </div>
-            </div>
-          </div>
-        );
-      case "settings":
-        return (
-          <div className="settings-container">
-            <div className="card">
-              <h2>Configurações</h2>
-              <div className="card-content">
-                <button
-                  className="btn-primary"
-                  onClick={() => setSettingsModalOpen(true)}
-                >
-                  Abrir Configurações de Trabalho e Metas
-                </button>
-                <div className="settings-info">
-                  <p>
-                    <strong>Dias de Trabalho:</strong>{" "}
-                    {workDays.length} dias/semana
-                  </p>
-                  <p>
-                    <strong>Meta mensal:</strong>{" "}
-                    {formatCurrency(monthlySalaryGoal)}
-                  </p>
-                  <p>
-                    <strong>Dias trabalhados no mês:</strong>{" "}
-                    {monthlyWorkingDays}
-                  </p>
-                </div>
-              </div>
-            </div>
-          </div>
-        );
-      default:
-        return null;
+    // Força salvamento imediato do histórico E do estado resetado
+    if (user) {
+      saveAppData({ transactions: newTransactions, bills, categories, shiftState: resetShiftState }, user.uid);
     }
   };
 
-  if (!isLoggedIn) {
-    return (
-      <div className="login-container">
-        <div className="login-card">
-          <h1>Finan-Drive Pro</h1>
-          <p>Informe seu nome para começar</p>
-          <input
-            type="text"
-            placeholder="Seu nome"
-            value={loginName}
-            onChange={(e) => setLoginName(e.target.value)}
-          />
-          {loginError && (
-            <p className="error-message">{loginError}</p>
-          )}
-          <button className="btn-primary" onClick={handleLogin}>
-            Entrar
-          </button>
-        </div>
-      </div>
-    );
+  const handleSaveBill = (billData: Omit<Bill, 'id'>) => {
+    if (editingBill) {
+      setBills(prev => prev.map(b => (b.id === editingBill.id ? { ...b, ...billData } : b)));
+      setEditingBill(null);
+    } else {
+      setBills(prev => [...prev, { ...billData, id: Math.random().toString(36).substr(2, 9) }]);
+    }
+    setIsBillModalOpen(false);
+  };
+
+  const handleEditBill = (bill: Bill) => { setEditingBill(bill); setIsBillModalOpen(true); };
+  const toggleBillPaid = (id: string) => { setBills(prev => prev.map(b => (b.id === id ? { ...b, isPaid: !b.isPaid } : b))); };
+  const handleDeleteBill = (id: string) => { setBills(prev => prev.filter(b => b.id !== id)); };
+  const handleDeleteTransaction = (id: string) => { setTransactions(prev => prev.filter(t => t.id !== id)); };
+
+  // --- RENDER ---
+
+  if (authLoading) return <div className="min-h-screen bg-slate-900 flex items-center justify-center text-white">Carregando FinanDrive...</div>;
+
+  if (!user) {
+    return <Login />;
   }
 
-  const COLORS = ["#4caf50", "#f44336"];
-
-  const renderCustomizedLabel = ({
-    cx,
-    cy,
-    midAngle,
-    innerRadius,
-    outerRadius,
-    percent,
-  }: any) => {
-    const radius = innerRadius + (outerRadius - innerRadius) * 0.5;
-    const x = cx + radius * Math.cos((-midAngle * Math.PI) / 180);
-    const y = cy + radius * Math.sin((-midAngle * Math.PI) / 180);
-
-    return (
-      <text
-        x={x}
-        y={y}
-        fill="white"
-        textAnchor={x > cx ? "start" : "end"}
-        dominantBaseline="central"
-      >
-        {(percent * 100).toFixed(0)}%
-      </text>
-    );
-  };
-
   return (
-    <div className="app-container">
-      <header className="app-header">
-        <div>
-          <h1>Finan-Drive Pro</h1>
-          <p>Bem-vindo, {user?.name}</p>
-        </div>
-        <div className="header-right">
-          <button
-            className="btn-secondary"
-            onClick={() => setSubscriptionModalOpen(true)}
-          >
-            Plano: {user?.plan === "free" ? "Gratuito" : "Premium"}
-          </button>
-          <button className="btn-secondary" onClick={handleLogout}>
-            Sair
-          </button>
-        </div>
-      </header>
-
-      <nav className="app-nav">
-        <button
-          className={activeTab === "dashboard" ? "active" : ""}
-          onClick={() => setActiveTab("dashboard")}
-        >
-          Dashboard
-        </button>
-        <button
-          className={activeTab === "shift" ? "active" : ""}
-          onClick={() => setActiveTab("shift")}
-        >
-          Turno
-        </button>
-        <button
-          className={activeTab === "reports" ? "active" : ""}
-          onClick={() => setActiveTab("reports")}
-        >
-          Relatórios
-        </button>
-        <button
-          className={activeTab === "bills" ? "active" : ""}
-          onClick={() => setActiveTab("bills")}
-        >
-          Contas
-        </button>
-        <button
-          className={activeTab === "history" ? "active" : ""}
-          onClick={() => setActiveTab("history")}
-        >
-          Histórico
-        </button>
-        <button
-          className={activeTab === "settings" ? "active" : ""}
-          onClick={() => setActiveTab("settings")}
-        >
-          Configurações
-        </button>
-      </nav>
-
-      <main className="app-main">
-        {renderActiveTab()}
-        <button
-          className="floating-action-button"
-          onClick={() => setTransactionModalOpen(true)}
-        >
-          +
-        </button>
-      </main>
-
-      <TransactionModal
-        isOpen={transactionModalOpen}
-        onClose={() => setTransactionModalOpen(false)}
-        onSave={handleSaveTransaction}
-      />
-
-      <ShiftModal
-        isOpen={shiftModalOpen}
-        onClose={() => setShiftModalOpen(false)}
-        onStart={handleStartShift}
-        onEnd={handleEndShift}
-        activeShift={activeShift}
-      />
-
-      <ShiftEntryModal
-        isOpen={entryModalOpen}
-        onClose={() => setEntryModalOpen(false)}
-        onSave={handleAddShiftEntry}
-      />
-
-      <BillModal
-        isOpen={billModalOpen}
-        onClose={() => setBillModalOpen(false)}
-        onSave={handleSaveBill}
-        initialBill={billBeingEdited}
-        categories={categories}
-      />
-
-      <SettingsModal
-        isOpen={settingsModalOpen}
-        onClose={() => setSettingsModalOpen(false)}
-        workDays={workDays}
-        onSaveWorkDays={handleSaveWorkDays}
-        categories={categories}
-        onAddCategory={handleAddCategory}
-        onEditCategory={handleEditCategory}
-        onDeleteCategory={handleDeleteCategory}
-        monthlySalaryGoal={monthlySalaryGoal}
-        monthlyWorkingDays={monthlyWorkingDays}
-        onSaveGoals={handleSaveGoals}
-      />
-
-      {subscriptionModalOpen && (
-        <div className="modal-backdrop">
-          <div className="modal">
-            <h2>Plano de Assinatura</h2>
-            <div className="modal-content">
-              <p>
-                Seu plano atual:{" "}
-                <strong>
-                  {user?.plan === "free" ? "Gratuito" : "Premium"}
-                </strong>
-              </p>
-              <p>
-                Em breve você poderá fazer upgrade para o plano
-                Premium com mais recursos.
-              </p>
-
-              <div className="subscription-plans">
-                <div className="subscription-card">
-                  <h3>Gratuito</h3>
-                  <p>Ideal para começar a controlar seus ganhos.</p>
-                  <ul>
-                    <li>Lançamentos de entradas e saídas</li>
-                    <li>Controle básico de turnos</li>
-                    <li>Dashboard com visão diária</li>
-                  </ul>
-                </div>
-                <div className="subscription-card">
-                  <h3>Premium (em breve)</h3>
-                  <p>
-                    Recursos avançados para máxima eficiência.
-                  </p>
-                  <ul>
-                    <li>Relatórios completos</li>
-                    <li>Metas avançadas e alertas</li>
-                    <li>Exportação de dados</li>
-                  </ul>
-                </div>
-              </div>
-            </div>
-
-            <div className="modal-actions">
-              <button
-                className="btn-secondary"
-                onClick={() => setSubscriptionModalOpen(false)}
-              >
-                Fechar
-              </button>
-              <button
-                className="btn-primary"
-                onClick={() => setSubscriptionModalOpen(false)}
-              >
-                Ok
-              </button>
-            </div>
+    <div className="h-screen bg-slate-100 flex flex-col md:flex-row font-sans text-slate-900 overflow-hidden">
+      {/* Mobile Header */}
+      {activeTab !== 'shift' && (
+        <div className="md:hidden bg-slate-900 shadow-md p-4 flex justify-between items-center z-30 shrink-0">
+          <div className="flex items-center justify-center w-full relative">
+            <button onClick={() => setMobileMenuOpen(!mobileMenuOpen)} className="absolute left-0 text-slate-300">
+              {mobileMenuOpen ? <CloseIcon /> : <Menu />}
+            </button>
+            <span className="font-bold text-lg text-white tracking-tight">FinanDrive</span>
+            <button onClick={() => setShowValues(!showValues)} className="absolute right-0 text-slate-400">
+              {showValues ? <Eye size={22} /> : <EyeOff size={22} />}
+            </button>
           </div>
         </div>
       )}
+
+      {/* Sidebar */}
+      <aside className={`fixed inset-y-0 left-0 z-40 w-64 bg-slate-900 text-slate-300 transform transition-transform duration-300 ease-in-out md:relative md:translate-x-0 shrink-0 ${mobileMenuOpen ? 'translate-x-0' : '-translate-x-full'} ${activeTab === 'shift' ? 'md:w-20 lg:w-64' : ''}`}>
+        <div className="p-6 hidden md:flex flex-col justify-center items-center border-b border-slate-800 h-24">
+          <span className={`font-extrabold text-2xl tracking-tight text-white ${activeTab === 'shift' ? 'md:hidden lg:block' : ''}`}>FinanDrive</span>
+          {user.email && <span className="text-[10px] text-slate-500 mt-1 truncate max-w-full">{user.email}</span>}
+          {activeTab === 'shift' && <span className="hidden md:block lg:hidden font-bold text-white text-xl">FD</span>}
+        </div>
+        <nav className="p-4 space-y-2 mt-4 flex flex-col h-[calc(100%-8rem)]">
+          <button onClick={() => { setActiveTab('dashboard'); setMobileMenuOpen(false); }} className={`w-full flex items-center gap-3 px-4 py-3 rounded-xl transition-all font-medium ${activeTab === 'dashboard' ? 'bg-indigo-600 text-white shadow-lg shadow-indigo-900/20' : 'hover:bg-slate-800 hover:text-white'}`}>
+            <LayoutDashboard size={20} /><span className={`${activeTab === 'shift' ? 'md:hidden lg:inline' : ''}`}>Visão Geral</span>
+          </button>
+          <button onClick={() => { setActiveTab('shift'); setMobileMenuOpen(false); }} className={`w-full flex items-center gap-3 px-4 py-3 rounded-xl transition-all font-medium ${activeTab === 'shift' ? 'bg-indigo-600 text-white shadow-lg shadow-indigo-900/20' : 'hover:bg-slate-800 hover:text-white'}`}>
+            <Play size={20} /><span className={`${activeTab === 'shift' ? 'md:hidden lg:inline' : ''}`}>Turno</span>
+          </button>
+          <button onClick={() => { setActiveTab('reports'); setMobileMenuOpen(false); }} className={`w-full flex items-center gap-3 px-4 py-3 rounded-xl transition-all font-medium ${activeTab === 'reports' ? 'bg-indigo-600 text-white shadow-lg shadow-indigo-900/20' : 'hover:bg-slate-800 hover:text-white'}`}>
+            <PieChartIcon size={20} /><span className={`${activeTab === 'shift' ? 'md:hidden lg:inline' : ''}`}>Relatórios</span>
+          </button>
+          <button onClick={() => { setActiveTab('bills'); setMobileMenuOpen(false); }} className={`w-full flex items-center gap-3 px-4 py-3 rounded-xl transition-all font-medium ${activeTab === 'bills' ? 'bg-indigo-600 text-white shadow-lg shadow-indigo-900/20' : 'hover:bg-slate-800 hover:text-white'}`}>
+            <CalendarClock size={20} /><span className={`${activeTab === 'shift' ? 'md:hidden lg:inline' : ''}`}>Contas</span>
+          </button>
+          <button onClick={() => { setActiveTab('history'); setMobileMenuOpen(false); }} className={`w-full flex items-center gap-3 px-4 py-3 rounded-xl transition-all font-medium ${activeTab === 'history' ? 'bg-indigo-600 text-white shadow-lg shadow-indigo-900/20' : 'hover:bg-slate-800 hover:text-white'}`}>
+            <History size={20} /><span className={`${activeTab === 'shift' ? 'md:hidden lg:inline' : ''}`}>Histórico</span>
+          </button>
+          <div className="mt-auto space-y-2">
+            <button onClick={() => { setIsSettingsModalOpen(true); setMobileMenuOpen(false); }} className={`w-full flex items-center gap-3 px-4 py-3 rounded-xl transition-all font-medium hover:bg-slate-800 hover:text-white text-slate-300`}>
+              <Settings size={20} /><span className={`${activeTab === 'shift' ? 'md:hidden lg:inline' : ''}`}>Configurações</span>
+            </button>
+            <button onClick={handleLogout} className={`w-full flex items-center gap-3 px-4 py-3 rounded-xl transition-all font-medium hover:bg-rose-900/30 hover:text-rose-400 text-slate-400`}>
+              <LogOut size={20} /><span className={`${activeTab === 'shift' ? 'md:hidden lg:inline' : ''}`}>Sair</span>
+            </button>
+          </div>
+        </nav>
+      </aside>
+
+      <main className={`flex-1 overflow-y-auto h-full ${activeTab === 'shift' ? 'bg-slate-950' : 'p-4 md:p-8'}`}>
+        {/* Renderização condicional das abas */}
+        {activeTab === 'shift' ? (
+          <div className="h-full flex flex-col p-3 md:p-6 max-w-7xl mx-auto overflow-hidden">
+            <div className="flex justify-between items-center mb-3 shrink-0">
+              <div className="flex items-center gap-3">
+                <button onClick={() => setMobileMenuOpen(true)} className="md:hidden text-slate-400 p-2 bg-slate-900 rounded-lg"><Menu size={24} /></button>
+                <div>
+                  <div className="text-slate-400 text-[10px] uppercase tracking-widest font-bold mb-0.5">Status</div>
+                  <div className={`flex items-center gap-2 text-sm md:text-base font-bold ${shiftState.isActive ? shiftState.isPaused ? 'text-yellow-400' : 'text-emerald-400 animate-pulse' : 'text-rose-400'}`}>
+                    <div className={`w-2 h-2 rounded-full ${shiftState.isActive ? shiftState.isPaused ? 'bg-yellow-400' : 'bg-emerald-400' : 'bg-rose-400'}`}></div>
+                    {shiftState.isActive ? shiftState.isPaused ? 'PAUSADO' : 'ONLINE' : 'OFFLINE'}
+                  </div>
+                </div>
+              </div>
+              <div className="flex items-center gap-4 text-right">
+                <button onClick={() => setShowValues(!showValues)} className="text-slate-500 hover:text-slate-300">{showValues ? <Eye size={20} /> : <EyeOff size={20} />}</button>
+                <div>
+                  <div className="text-slate-400 text-[10px] uppercase tracking-widest font-bold mb-0.5">Hoje</div>
+                  <div className="text-white text-sm font-medium">{new Date().toLocaleDateString('pt-BR', { day: '2-digit', month: 'short' })}</div>
+                </div>
+              </div>
+            </div>
+
+            <div className="grid grid-cols-2 md:grid-cols-4 gap-2 mb-3 shrink-0">
+              <div className="bg-slate-900/80 rounded-xl p-3 border border-slate-800 shadow-lg col-span-2 flex flex-col justify-center items-center relative group">
+                <div className="text-slate-500 text-[10px] font-bold uppercase tracking-wider mb-1 flex items-center gap-2"><Clock size={10} /> Tempo</div>
+                <div className="text-3xl md:text-4xl font-mono font-bold text-white tracking-tighter">
+                  {formatTime(shiftState.elapsedSeconds).split(' ')[0]}
+                  <span className="text-base md:text-xl text-slate-500 ml-1">{formatTime(shiftState.elapsedSeconds).split(' ').slice(1).join(' ')}</span>
+                </div>
+                {shiftState.isActive && <button onClick={handleEditStartTime} className="absolute top-2 right-2 p-2 text-white bg-indigo-600 hover:bg-indigo-500 rounded-lg shadow-md transition-colors z-20 border border-white/20"><Edit2 size={16} /></button>}
+              </div>
+              <div className="bg-gradient-to-br from-emerald-900 to-slate-900 rounded-xl p-3 border border-emerald-800/30 shadow-lg col-span-2 flex flex-col justify-center items-center relative overflow-hidden">
+                <div className="text-emerald-400/80 text-[10px] font-bold uppercase tracking-wider mb-1 flex items-center gap-2"><Wallet size={10} /> Líquido</div>
+                <div className="text-3xl md:text-4xl font-bold text-emerald-400 tracking-tight">{formatCurrency(currentShiftLiquid)}</div>
+              </div>
+            </div>
+
+            <div className="flex-1 grid grid-cols-2 md:grid-cols-3 lg:grid-cols-6 gap-2 mb-2 overflow-y-auto content-start">
+              <button onClick={() => handleOpenEntry('uber')} disabled={!shiftState.isActive || shiftState.isPaused} className="bg-black hover:bg-slate-900 border border-slate-800 rounded-xl p-3 h-20 flex flex-col justify-between transition-all active:scale-95 disabled:opacity-40"><div className="flex justify-between w-full items-start"><div className="bg-slate-800 p-1.5 rounded-lg text-white font-bold text-xs">U</div><div className="text-slate-400 text-[10px] uppercase font-bold">Uber</div></div><div className="text-white font-bold text-lg text-right">{formatCurrency(shiftState.earnings.uber)}</div></button>
+              <button onClick={() => handleOpenEntry('99')} disabled={!shiftState.isActive || shiftState.isPaused} className="bg-yellow-400 hover:bg-yellow-300 border border-yellow-500 rounded-xl p-3 h-20 flex flex-col justify-between transition-all active:scale-95 disabled:opacity-40"><div className="flex justify-between w-full items-start"><div className="bg-black/10 p-1.5 rounded-lg text-black font-bold text-xs">99</div><div className="text-black/60 text-[10px] uppercase font-bold">99Pop</div></div><div className="text-black font-bold text-lg text-right">{formatCurrency(shiftState.earnings.n99)}</div></button>
+              <button onClick={() => handleOpenEntry('indrive')} disabled={!shiftState.isActive || shiftState.isPaused} className="bg-green-600 hover:bg-green-500 border border-green-500 rounded-xl p-3 h-20 flex flex-col justify-between transition-all active:scale-95 disabled:opacity-40"><div className="flex justify-between w-full items-start"><div className="bg-white/20 p-1.5 rounded-lg text-white font-bold text-xs">In</div><div className="text-green-100 text-[10px] uppercase font-bold">InDrive</div></div><div className="text-white font-bold text-lg text-right">{formatCurrency(shiftState.earnings.indrive)}</div></button>
+              <button onClick={() => handleOpenEntry('private')} disabled={!shiftState.isActive || shiftState.isPaused} className="bg-slate-700 hover:bg-slate-600 border border-slate-600 rounded-xl p-3 h-20 flex flex-col justify-between transition-all active:scale-95 disabled:opacity-40"><div className="flex justify-between w-full items-start"><div className="bg-white/10 p-1.5 rounded-lg text-white"><Wallet size={14} /></div><div className="text-slate-300 text-[10px] uppercase font-bold">Partic.</div></div><div className="text-white font-bold text-lg text-right">{formatCurrency(shiftState.earnings.private)}</div></button>
+              <button onClick={() => handleOpenEntry('km')} disabled={!shiftState.isActive || shiftState.isPaused} className="bg-blue-600 hover:bg-blue-500 border border-blue-500 rounded-xl p-3 h-20 flex flex-col justify-between transition-all active:scale-95 disabled:opacity-40"><div className="flex justify-between w-full items-start"><div className="bg-white/20 p-1.5 rounded-lg text-white"><Gauge size={14} /></div><div className="text-blue-100 text-[10px] uppercase font-bold">KM</div></div><div className="text-white font-bold text-lg text-right">{shiftState.km.toFixed(1)}</div></button>
+              <button onClick={() => handleOpenEntry('expense')} disabled={!shiftState.isActive || shiftState.isPaused} className="bg-rose-600 hover:bg-rose-500 border border-rose-500 rounded-xl p-3 h-20 flex flex-col justify-between transition-all active:scale-95 disabled:opacity-40"><div className="flex justify-between w-full items-start"><div className="bg-white/20 p-1.5 rounded-lg text-white"><Fuel size={14} /></div><div className="text-rose-100 text-[10px] uppercase font-bold">Gasto</div></div><div className="text-white font-bold text-lg text-right">{formatCurrency(shiftState.expenses)}</div></button>
+            </div>
+
+            <div className="grid grid-cols-3 gap-2 mb-3 shrink-0">
+              <div className="bg-slate-900/50 rounded-lg p-4 border border-slate-800 flex flex-col items-center justify-center"><div className="text-slate-400 text-xs font-medium uppercase tracking-wide mb-1">R$ / Hora</div><div className="text-xl md:text-2xl font-bold text-white">{formatCurrency(currentShiftRph)}</div></div>
+              <div className="bg-slate-900/50 rounded-lg p-4 border border-slate-800 flex flex-col items-center justify-center"><div className="text-slate-400 text-xs font-medium uppercase tracking-wide mb-1">R$ / KM</div><div className="text-xl md:text-2xl font-bold text-white">{formatCurrency(currentShiftRpk)}</div></div>
+              <div className="bg-slate-900/50 rounded-lg p-4 border border-slate-800 flex flex-col items-center justify-center"><div className="text-slate-400 text-xs font-medium uppercase tracking-wide mb-1">Bruto</div><div className="text-xl md:text-2xl font-bold text-blue-300">{formatCurrency(currentShiftTotal)}</div></div>
+            </div>
+
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-3 shrink-0 mt-auto pb-4">
+              {!shiftState.isActive ? (
+                <button onClick={handleStartShift} className="col-span-2 bg-indigo-600 hover:bg-indigo-500 text-white h-16 rounded-xl font-bold text-xl shadow-lg shadow-indigo-900/50 flex items-center justify-center gap-3 transition-all active:scale-[0.98] border border-indigo-500"><Play size={24} fill="currentColor" />INICIAR TURNO</button>
+              ) : (
+                <>
+                  <button onClick={handlePauseShift} className={`${shiftState.isPaused ? 'bg-emerald-600 hover:bg-emerald-500 border-emerald-500' : 'bg-slate-800 hover:bg-slate-700 border-slate-700'} text-white h-14 rounded-xl font-bold text-lg flex items-center justify-center gap-2 transition-all active:scale-[0.98] border shadow-lg`}>
+                    {shiftState.isPaused ? <Play size={20} fill="currentColor" /> : <Pause size={20} fill="currentColor" />}
+                    {shiftState.isPaused ? 'RETOMAR' : 'PAUSAR'}
+                  </button>
+                  <button onClick={handleStopShift} className="bg-rose-900/80 hover:bg-rose-900 text-rose-200 border border-rose-800 h-14 rounded-xl font-bold text-lg shadow-lg flex items-center justify-center gap-2 transition-all active:scale-[0.98]"><StopCircle size={20} /> ENCERRAR</button>
+                </>
+              )}
+            </div>
+          </div>
+        ) : (
+          /* Dashboard, Reports, Bills, History */
+          <>
+            <div className="flex flex-col md:flex-row justify-between items-start md:items-center mb-8 gap-4">
+              <div className="flex items-center gap-4">
+                <div>
+                  <h1 className="text-2xl font-bold text-slate-800">{activeTab === 'dashboard' ? 'Painel de Controle' : activeTab === 'reports' ? 'Relatórios de Ganhos' : activeTab === 'bills' ? 'Contas & Planejamento' : 'Histórico Completo'}</h1>
+                  <p className="text-slate-500 text-sm flex items-center gap-1">
+                    {activeTab === 'dashboard' && stats.pendingBillsTotal > 0 ? <span className="text-rose-500 font-medium">Você tem {formatCurrency(stats.pendingBillsTotal)} em contas pendentes.</span> : <span>Gestão profissional para motoristas.</span>}
+                  </p>
+                </div>
+                <button onClick={() => setShowValues(!showValues)} className="hidden md:flex p-2 text-slate-400 hover:text-indigo-600 bg-white hover:bg-slate-50 rounded-lg border border-slate-200 transition-colors" title={showValues ? 'Ocultar Valores' : 'Mostrar Valores'}>{showValues ? <Eye size={20} /> : <EyeOff size={20} />}</button>
+              </div>
+              <div className="flex flex-wrap gap-2 w-full md:w-auto">
+                <button onClick={() => setIsTransModalOpen(true)} className="flex-1 md:flex-none flex items-center justify-center gap-2 bg-white text-slate-700 border border-slate-200 px-4 py-2.5 rounded-xl hover:bg-slate-50 transition-all font-medium text-sm"><TrendingDown size={16} className="text-rose-500" />Novo Lançamento</button>
+              </div>
+            </div>
+
+            {/* Dashboard Content */}
+            {activeTab === 'dashboard' && (
+              <div className="space-y-6 animate-in fade-in slide-in-from-bottom-4 duration-500">
+                <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-2 gap-4">
+                  <div className="bg-gradient-to-br from-indigo-600 to-blue-700 rounded-xl p-5 text-white shadow-lg relative overflow-hidden group">
+                    <div className="absolute top-0 right-0 p-4 opacity-10 group-hover:opacity-20 transition-opacity"><Target size={80} /></div>
+                    <div className="relative z-10">
+                      <div className="flex justify-between items-start">
+                        <div>
+                          <p className="text-indigo-100 text-sm font-medium mb-1 flex items-center gap-1"><Target size={14} /> Meta Diária (Real)</p>
+                          <h3 className="text-3xl font-bold mb-1">{formatCurrency(stats.dailyGoal)}</h3>
+                        </div>
+                        <button onClick={() => setIsSettingsModalOpen(true)} className="p-2 bg-white/10 hover:bg-white/20 rounded-lg text-white transition-colors z-20 backdrop-blur-sm" title="Configurar Dias de Trabalho"><Settings size={20} /></button>
+                      </div>
+                      <p className="text-xs text-indigo-200 mt-1 opacity-90 leading-tight">{stats.dailyGoal === 0 ? 'Parabéns! Seu caixa cobre suas contas futuras.' : stats.goalExplanation}</p>
+                    </div>
+                  </div>
+                  <StatCard title="Lucro Líquido" value={formatCurrency(stats.netProfit)} icon={Wallet} colorClass="bg-slate-800" trend={`${stats.profitMargin.toFixed(0)}% Margem`} trendUp={stats.profitMargin > 30} />
+                </div>
+                <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
+                  <div className="lg:col-span-2 bg-white p-6 rounded-2xl shadow-sm border border-slate-200">
+                    <div className="flex justify-between items-center mb-6"><h3 className="font-bold text-slate-800">Ganhos vs Despesas</h3><div className="text-xs text-slate-500">Visão Geral</div></div>
+                    <div className="h-72 w-full flex items-center justify-center">
+                      <ResponsiveContainer width="100%" height="100%">
+                        <PieChart>
+                          <Pie data={pieData} cx="50%" cy="50%" labelLine={false} label={renderCustomizedLabel} outerRadius="80%" dataKey="value">
+                            {pieData.map((entry, index) => <Cell key={`cell-${index}`} fill={entry.color} />)}
+                          </Pie>
+                          <Legend layout="vertical" verticalAlign="middle" align="right" iconType="circle" />
+                          <Tooltip formatter={(value: number) => [showValues ? `R$ ${value.toFixed(2)}` : 'R$ ****', '']} contentStyle={{ borderRadius: '12px', border: 'none', boxShadow: '0 10px 15px -3px rgb(0 0 0 / 0.1)' }} />
+                        </PieChart>
+                      </ResponsiveContainer>
+                    </div>
+                  </div>
+                  <div className="space-y-6">
+                    <div className="bg-white p-6 rounded-2xl shadow-sm border border-slate-200">
+                      <div className="flex justify-between items-center mb-4"><h3 className="font-bold text-slate-800 text-sm">Próximos Pagamentos</h3><button onClick={() => setActiveTab('bills')} className="text-indigo-600 text-xs hover:underline">Ver tudo</button></div>
+                      <div className="space-y-3">
+                        {bills.filter(b => !b.isPaid).slice(0, 3).map(bill => (
+                          <div key={bill.id} className="flex justify-between items-center p-3 bg-slate-50 rounded-lg border border-slate-100">
+                            <div><p className="text-sm font-semibold text-slate-700">{bill.description}</p><p className="text-xs text-rose-500 font-medium">Vence: {formatDateBr(bill.dueDate)}</p></div>
+                            <span className="text-sm font-bold text-slate-800">{formatCurrency(bill.amount)}</span>
+                          </div>
+                        ))}
+                        {bills.filter(b => !b.isPaid).length === 0 && <p className="text-center text-xs text-slate-400 py-4">Tudo pago! 🎉</p>}
+                      </div>
+                    </div>
+                  </div>
+                </div>
+              </div>
+            )}
+
+            {/* Reports Content */}
+            {activeTab === 'reports' && <ReportsTab transactions={transactions} showValues={showValues} />}
+
+            {/* Bills Content */}
+            {activeTab === 'bills' && (
+              <div className="space-y-6 animate-in fade-in slide-in-from-bottom-4 duration-500">
+                <div className="grid grid-cols-2 gap-4">
+                  <div className="bg-white p-5 rounded-2xl shadow-sm border border-emerald-100 flex items-center justify-between">
+                    <div><p className="text-xs font-bold text-emerald-600 uppercase mb-1">Total Pago</p><h3 className="text-2xl font-bold text-emerald-700">{formatCurrency(billsSummary.paid)}</h3></div>
+                    <div className="bg-emerald-50 p-3 rounded-full text-emerald-600"><CheckCircle2 size={24} /></div>
+                  </div>
+                  <div className="bg-white p-5 rounded-2xl shadow-sm border border-rose-100 flex items-center justify-between">
+                    <div><p className="text-xs font-bold text-rose-600 uppercase mb-1">A Pagar</p><h3 className="text-2xl font-bold text-rose-700">{formatCurrency(billsSummary.pending)}</h3></div>
+                    <div className="bg-rose-50 p-3 rounded-full text-rose-600"><AlertCircle size={24} /></div>
+                  </div>
+                </div>
+                <div className="flex justify-between items-center bg-white p-6 rounded-2xl shadow-sm border border-slate-200">
+                  <div><h2 className="text-lg font-bold text-slate-800">Contas a Pagar</h2><p className="text-slate-500 text-sm">Gerencie suas obrigações futuras.</p></div>
+                  <button onClick={() => { setEditingBill(null); setIsBillModalOpen(true); }} className="flex items-center gap-2 bg-rose-600 text-white px-4 py-2 rounded-lg hover:bg-rose-700 transition-colors shadow-lg shadow-rose-200"><Plus size={16} /> Adicionar</button>
+                </div>
+                <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+                  {bills.map(bill => (
+                    <div key={bill.id} className={`p-5 rounded-xl border transition-all ${bill.isPaid ? 'bg-slate-50 border-slate-200 opacity-75' : 'bg-white border-rose-100 shadow-sm'}`}>
+                      <div className="flex justify-between items-start mb-3">
+                        <div className={`p-2 rounded-lg ${bill.isPaid ? 'bg-emerald-100 text-emerald-600' : 'bg-rose-100 text-rose-600'}`}>{bill.isPaid ? <Wallet size={20} /> : <CalendarClock size={20} />}</div>
+                        <div className="flex items-center gap-2">
+                          <span className={`text-lg font-bold ${bill.isPaid ? 'text-slate-500' : 'text-slate-800'}`}>{formatCurrency(bill.amount)}</span>
+                          <div className="flex">
+                            <button onClick={() => handleEditBill(bill)} className="p-2 text-slate-400 hover:text-indigo-600 hover:bg-indigo-50 rounded-full transition-colors" title="Editar conta"><Edit2 size={18} /></button>
+                            <button onClick={() => handleDeleteBill(bill.id)} className="p-2 text-slate-400 hover:text-rose-500 hover:bg-rose-50 rounded-full transition-colors" title="Excluir conta"><Trash2 size={18} /></button>
+                          </div>
+                        </div>
+                      </div>
+                      <div className="mb-1"><h4 className={`font-semibold ${bill.isPaid ? 'text-slate-500 line-through' : 'text-slate-800'}`}>{bill.description}</h4>{bill.category && <span className="text-[10px] uppercase font-bold tracking-wider text-slate-400">{bill.category}</span>}</div>
+                      <div className="flex justify-between items-center mt-4">
+                        <span className="text-xs text-slate-500">Vencimento: {formatDateBr(bill.dueDate)}</span>
+                        <button onClick={() => toggleBillPaid(bill.id)} className={`text-xs px-3 py-1 rounded-full border transition-colors ${bill.isPaid ? 'border-emerald-200 text-emerald-600 hover:bg-emerald-50' : 'border-slate-200 text-slate-600 hover:bg-slate-100'}`}>{bill.isPaid ? 'Marcar como Pendente' : 'Marcar como Pago'}</button>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
+
+            {/* History Content */}
+            {activeTab === 'history' && (
+              <div className="space-y-6 animate-in fade-in slide-in-from-bottom-4 duration-500">
+                <div className="bg-white p-4 md:p-6 rounded-2xl shadow-sm border border-slate-200">
+                  <div className="flex flex-col md:flex-row justify-between items-center gap-4 mb-4">
+                    <div><h2 className="text-xl font-bold text-slate-800 flex items-center gap-2"><History className="text-indigo-600" /> Histórico de Transações</h2></div>
+                    <div className="flex bg-slate-100 p-1 rounded-xl overflow-x-auto max-w-full">
+                      {(['today', 'week', 'month', 'all', 'custom'] as const).map(range => (
+                        <button key={range} onClick={() => setHistoryRange(range)} className={`px-3 py-1.5 text-xs md:text-sm font-medium rounded-lg transition-all whitespace-nowrap ${historyRange === range ? 'bg-white text-indigo-600 shadow-sm' : 'text-slate-500 hover:text-slate-700'}`}>{range === 'today' && 'Hoje'}{range === 'week' && 'Semana'}{range === 'month' && 'Mês'}{range === 'all' && 'Tudo'}{range === 'custom' && 'Outro'}</button>
+                      ))}
+                    </div>
+                  </div>
+                  {historyRange === 'custom' && (
+                    <div className="flex items-center gap-2 bg-slate-50 p-2 rounded-xl border border-slate-200 justify-center animate-in fade-in slide-in-from-top-2 mb-4">
+                      <input type="date" value={historyCustomStart} onChange={e => setHistoryCustomStart(e.target.value)} className="px-2 py-1.5 border rounded-lg text-sm outline-none focus:ring-2 focus:ring-indigo-500 w-full md:w-auto" />
+                      <span className="text-slate-400"><ChevronRight size={16} /></span>
+                      <input type="date" value={historyCustomEnd} onChange={e => setHistoryCustomEnd(e.target.value)} className="px-2 py-1.5 border rounded-lg text-sm outline-none focus:ring-2 focus:ring-indigo-500 w-full md:w-auto" />
+                    </div>
+                  )}
+                  <div className="grid grid-cols-3 gap-2 md:gap-4 mt-2">
+                    <div className="bg-emerald-50 p-3 rounded-xl border border-emerald-100 text-center"><div className="text-xs text-emerald-600 font-bold uppercase mb-1 flex justify-center items-center gap-1"><ArrowUpCircle size={12} /> Entradas</div><div className="text-sm md:text-lg font-bold text-emerald-700">{formatCurrency(historySummary.income)}</div></div>
+                    <div className="bg-rose-50 p-3 rounded-xl border border-rose-100 text-center"><div className="text-xs text-rose-600 font-bold uppercase mb-1 flex justify-center items-center gap-1"><ArrowDownCircle size={12} /> Saídas</div><div className="text-sm md:text-lg font-bold text-rose-700">{formatCurrency(historySummary.expense)}</div></div>
+                    <div className="bg-slate-50 p-3 rounded-xl border border-slate-200 text-center"><div className="text-xs text-slate-600 font-bold uppercase mb-1">Saldo</div><div className={`text-sm md:text-lg font-bold ${historySummary.balance >= 0 ? 'text-indigo-600' : 'text-rose-600'}`}>{formatCurrency(historySummary.balance)}</div></div>
+                  </div>
+                </div>
+                <div className="bg-white rounded-2xl shadow-sm border border-slate-200 overflow-hidden">
+                  <div className="hidden md:grid grid-cols-12 bg-slate-50 border-b border-slate-200 p-4 text-xs font-semibold text-slate-500 uppercase"><div className="col-span-2">Data</div><div className="col-span-4">Descrição</div><div className="col-span-2">Categoria</div><div className="col-span-2">Eficiência</div><div className="col-span-1 text-right">Valor</div><div className="col-span-1 text-center">Ações</div></div>
+                  <div className="divide-y divide-slate-100">
+                    {filteredHistory.length === 0 ? <div className="p-8 text-center text-slate-400"><Filter size={48} className="mx-auto mb-2 opacity-20" /><p>Nenhuma transação encontrada neste período.</p></div> : filteredHistory.map(t => (
+                      <div key={t.id} className="hover:bg-slate-50 transition-colors">
+                        <div className="hidden md:grid grid-cols-12 items-center p-4 text-sm">
+                          <div className="col-span-2 text-slate-600">{formatDateBr(t.date)}</div>
+                          <div className="col-span-4 font-medium text-slate-800">{t.description}</div>
+                          <div className="col-span-2"><span className={`px-2 py-1 rounded text-xs border ${t.category ? 'bg-slate-100 text-slate-600 border-slate-200' : 'bg-emerald-100 text-emerald-700 border-emerald-200'}`}>{t.category || 'Entrada'}</span></div>
+                          <div className="col-span-2 text-slate-500 text-xs">{t.mileage ? `${t.mileage}km • ${t.durationHours}h` : '-'}</div>
+                          <div className={`col-span-1 font-bold text-right ${t.type === TransactionType.INCOME ? 'text-emerald-600' : 'text-rose-600'}`}>{t.type === TransactionType.INCOME ? '+' : '-'} {formatCurrency(t.amount)}</div>
+                          <div className="col-span-1 text-center"><button onClick={() => handleDeleteTransaction(t.id)} className="text-slate-400 hover:text-rose-500 p-1"><CloseIcon size={16} /></button></div>
+                        </div>
+                        <div className="md:hidden p-4 flex justify-between items-center">
+                          <div className="flex-1 min-w-0 pr-4">
+                            <div className="font-semibold text-slate-800 truncate mb-1">{t.description}</div>
+                            <div className="flex items-center gap-2 text-xs text-slate-500"><span>{formatDateBr(t.date)}</span><span>•</span><span className={`px-1.5 py-0.5 rounded ${t.type === TransactionType.INCOME ? 'bg-emerald-50 text-emerald-700' : 'bg-rose-50 text-rose-700'}`}>{t.category || 'Entrada'}</span></div>
+                          </div>
+                          <div className="flex items-center gap-3">
+                            <div className={`font-bold ${t.type === TransactionType.INCOME ? 'text-emerald-600' : 'text-rose-600'}`}>{t.type === TransactionType.INCOME ? '+' : '-'} {formatCurrency(t.amount)}</div>
+                            <button onClick={() => handleDeleteTransaction(t.id)} className="text-slate-300 hover:text-rose-500 p-1"><Trash2 size={18} /></button>
+                          </div>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              </div>
+            )}
+          </>
+        )}
+      </main>
+
+      {/* Modals */}
+      <TransactionModal isOpen={isTransModalOpen} onClose={() => setIsTransModalOpen(false)} onSave={handleAddTransaction} onSaveBill={handleSaveBill} categories={categories} />
+      <ShiftModal isOpen={isShiftModalOpen} onClose={() => setIsShiftModalOpen(false)} onSave={handleSaveShift} initialData={shiftState.isActive || shiftState.isPaused ? { amount: currentShiftTotal, mileage: shiftState.km, durationHours: currentShiftHoursPrecise } : null} />
+      <ShiftEntryModal isOpen={entryModalOpen} onClose={() => setEntryModalOpen(false)} category={entryCategory} onSave={handleEntrySave} categories={categories} />
+      <BillModal isOpen={isBillModalOpen} onClose={() => { setIsBillModalOpen(false); setEditingBill(null); }} onSave={handleSaveBill} initialData={editingBill} categories={categories} />
+      <SettingsModal isOpen={isSettingsModalOpen} onClose={() => setIsSettingsModalOpen(false)} workDays={workDays} onSaveWorkDays={setWorkDays} categories={categories} onAddCategory={handleAddCategory} onEditCategory={handleEditCategory} onDeleteCategory={handleDeleteCategory} />
     </div>
   );
 }
