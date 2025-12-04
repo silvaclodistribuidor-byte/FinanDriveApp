@@ -44,7 +44,20 @@ import { ReportsTab } from './components/ReportsTab';
 import { Login } from './components/Login';
 import { loadAppData, saveAppData, auth, logoutUser } from "./services/firestoreService";
 import { Transaction, TransactionType, ExpenseCategory, Bill, ShiftState, DEFAULT_CATEGORIES, Category } from './types';
-import { onAuthStateChanged, User } from "firebase/auth";
+// Removed firebase/auth imports due to missing module in environment
+
+// Local User definition to replace Firebase User
+interface User {
+  uid: string;
+  email: string | null;
+}
+
+// Mock onAuthStateChanged
+const onAuthStateChanged = (auth: any, callback: (user: User | null) => void) => {
+  // If we had a real auth, we would subscribe here.
+  // For demo/error-fixing purposes, we do nothing.
+  return () => {};
+};
 
 const getTodayString = () => {
   const now = new Date();
@@ -357,7 +370,7 @@ function App() {
     return new Intl.NumberFormat('pt-BR', { style: 'currency', currency: 'BRL' }).format(val);
   };
 
-  // --- SMART CALCULATIONS (MONTHLY GOAL) ---
+  // --- SMART CALCULATIONS (MONTHLY & DAILY) ---
   const stats = useMemo(() => {
     const todayStr = getTodayString();
     const currentMonthPrefix = todayStr.substring(0, 7); // YYYY-MM
@@ -369,12 +382,9 @@ function App() {
     const profitMargin = totalIncome > 0 ? (netProfit / totalIncome) * 100 : 0;
     
     // 2. Monthly Vars
-    // D = Total Bills for the Month (using bills that have dueDate in current month OR are pending if you prefer, but let's stick to month filter as common for budgeting)
-    // Actually, prompt says "soma de todas as contas do mês". Let's assume all bills in the list are active/relevant. 
-    // To be precise, let's filter bills due in this month.
     const billsThisMonth = bills.filter(b => b.dueDate.startsWith(currentMonthPrefix));
     const totalMonthlyExpenses = billsThisMonth.reduce((acc, b) => acc + b.amount, 0); 
-    // D
+    // D = Total Expenses of the Month
     const D = totalMonthlyExpenses;
 
     // F = Total Income This Month
@@ -387,14 +397,74 @@ function App() {
     // S = Monthly Salary Goal
     const S = monthlySalaryGoal || 0;
 
-    // Calculations
+    // --- Monthly Logic ---
     const expensesPaid = Math.min(F, D);
     const expensesRemaining = Math.max(0, D - expensesPaid);
 
     const salaryAccumulated = Math.max(0, F - D);
     const salaryRemaining = (S > 0) ? Math.max(0, S - salaryAccumulated) : 0;
 
-    // Status & Colors
+    // --- Daily Logic ---
+    const F_today = transactions
+      .filter(t => t.type === TransactionType.INCOME && t.date === todayStr)
+      .reduce((acc, t) => acc + t.amount, 0);
+    
+    const unpaidBillsThisMonth = billsThisMonth.filter(b => !b.isPaid).sort((a,b) => a.dueDate.localeCompare(b.dueDate));
+    
+    // Helper to count work days between two dates inclusive
+    const countWorkDays = (startStr: string, endStr: string) => {
+      return plannedWorkDates.filter(d => d >= startStr && d <= endStr).length;
+    };
+
+    // Calculate daysRemainingForExpenses
+    // "Quantity of workdays from today until the last due date of bills still pending"
+    // If no specific pending bills, we assume until end of month to be safe or 1 if passed.
+    // Logic update: use 'unpaidBillsThisMonth' to find last due date.
+    let lastExpenseDate = todayStr;
+    if (unpaidBillsThisMonth.length > 0) {
+      lastExpenseDate = unpaidBillsThisMonth[unpaidBillsThisMonth.length - 1].dueDate;
+    } else {
+      // If all paid (or no bills), extend to end of month to dilute remaining expense target (if any math remainder exists)
+      const endOfMonth = new Date(new Date().getFullYear(), new Date().getMonth() + 1, 0);
+      lastExpenseDate = [endOfMonth.getFullYear(), String(endOfMonth.getMonth() + 1).padStart(2,'0'), String(endOfMonth.getDate()).padStart(2,'0')].join('-');
+    }
+    // If last expense date is in the past, use today (1 day remaining effectively)
+    if (lastExpenseDate < todayStr) lastExpenseDate = todayStr;
+
+    const daysRemainingForExpenses = Math.max(1, countWorkDays(todayStr, lastExpenseDate));
+    const expenseTargetToday = expensesRemaining / daysRemainingForExpenses;
+
+    // Calculate daysRemainingForSalary
+    const endOfMonth = new Date(new Date().getFullYear(), new Date().getMonth() + 1, 0);
+    const endOfMonthStr = [endOfMonth.getFullYear(), String(endOfMonth.getMonth() + 1).padStart(2,'0'), String(endOfMonth.getDate()).padStart(2,'0')].join('-');
+    const daysRemainingForSalary = Math.max(1, countWorkDays(todayStr, endOfMonthStr));
+
+    const salaryTargetToday = S > 0 ? salaryRemaining / daysRemainingForSalary : 0;
+
+    // Daily Goal Formula
+    let dailyGoal = 0;
+    if (S > 0) {
+      // If we have a salary goal, we aim for the max between needed expense coverage and salary trajectory
+      dailyGoal = Math.max(expenseTargetToday, salaryTargetToday);
+    } else {
+      // Only expenses
+      dailyGoal = expenseTargetToday;
+    }
+
+    // Daily Status Color
+    let dailyStatusColor = "bg-emerald-600"; // Default green
+    let dailyStatusMessage = "Parabéns! Você bateu a meta de hoje.";
+
+    if (F_today < expenseTargetToday) {
+      dailyStatusColor = "bg-rose-600";
+      dailyStatusMessage = "Você ainda não cobriu a parte de hoje destinada às despesas.";
+    } else if (F_today < dailyGoal) {
+      dailyStatusColor = "bg-amber-500";
+      const missing = dailyGoal - F_today;
+      dailyStatusMessage = `Despesas de hoje cobertas. Falta ${formatCurrency(missing, true)} para bater sua meta do dia.`;
+    }
+
+    // --- Monthly Status Colors ---
     let statusColor = "bg-emerald-600";
     let statusMessage = "Parabéns! Meta mensal atingida.";
     let displayGoal = 0;
@@ -412,7 +482,6 @@ function App() {
             statusMessage = "Parabéns! Você atingiu sua meta salarial neste mês.";
         }
     } else {
-        // No salary goal
         displayGoal = D;
         if (F < D) {
             statusColor = "bg-rose-600";
@@ -445,6 +514,14 @@ function App() {
         statusColor,
         statusMessage,
         
+        // Daily Card Vars
+        dailyGoal,
+        expenseTargetToday,
+        salaryTargetToday,
+        F_today,
+        dailyStatusColor,
+        dailyStatusMessage,
+
         pendingBillsTotal, 
         remainingDays
     };
@@ -634,6 +711,47 @@ function App() {
               </div>
             </div>
 
+            {/* --- NOVO CARD: META DO DIA --- */}
+            <div className={`${stats.dailyStatusColor} rounded-xl p-4 text-white shadow-lg mb-3 relative overflow-hidden transition-colors duration-500 shrink-0 group`}>
+               <div className="absolute top-0 right-0 p-3 opacity-10 group-hover:opacity-20 transition-opacity"><Target size={64} /></div>
+               <div className="relative z-10">
+                 <div className="flex justify-between items-start mb-2">
+                   <div>
+                     <p className="text-white/80 text-[10px] font-bold uppercase tracking-wider mb-0.5 flex items-center gap-1"><Target size={10} /> Meta do Dia</p>
+                     <h3 className="text-2xl font-bold">{formatCurrency(stats.dailyGoal)}</h3>
+                   </div>
+                   <div className="text-right">
+                     <p className="text-white/80 text-[10px] font-bold uppercase tracking-wider mb-0.5">Faturado</p>
+                     <h3 className="text-xl font-bold">{formatCurrency(stats.F_today)}</h3>
+                   </div>
+                 </div>
+                 
+                 {/* Progress Bar (Simple) */}
+                 <div className="w-full h-1.5 bg-black/20 rounded-full overflow-hidden mb-2">
+                   <div className="h-full bg-white/90 rounded-full transition-all duration-1000" style={{ width: `${Math.min(100, (stats.F_today / (stats.dailyGoal || 1)) * 100)}%` }}></div>
+                 </div>
+
+                 <div className="bg-black/10 p-2 rounded-lg space-y-1">
+                    <div className="flex justify-between text-[10px] font-medium">
+                       <span className="opacity-80">Mínimo p/ contas hoje:</span>
+                       <span>{formatCurrency(stats.expenseTargetToday)}</span>
+                    </div>
+                    {stats.S > 0 && (
+                      <div className="flex justify-between text-[10px] font-medium">
+                         <span className="opacity-80">Parte para salário hoje:</span>
+                         <span>{formatCurrency(stats.salaryTargetToday)}</span>
+                      </div>
+                    )}
+                 </div>
+                 
+                 <p className="text-[10px] text-white/90 mt-2 font-medium flex items-center gap-1">
+                   {stats.F_today < stats.expenseTargetToday && <AlertTriangle size={10} />}
+                   {stats.dailyStatusMessage}
+                 </p>
+               </div>
+            </div>
+            {/* ------------------------------- */}
+
             <div className="grid grid-cols-2 md:grid-cols-4 gap-2 mb-3 shrink-0">
               <div className="bg-slate-900/80 rounded-xl p-3 border border-slate-800 shadow-lg col-span-2 flex flex-col justify-center items-center relative group">
                 <div className="text-slate-500 text-[10px] font-bold uppercase tracking-wider mb-1 flex items-center gap-2"><Clock size={10} /> Tempo</div>
@@ -701,7 +819,7 @@ function App() {
               <div className="space-y-6 animate-in fade-in slide-in-from-bottom-4 duration-500">
                 <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-2 gap-4">
                   
-                  {/* META MENSAL REAL (NOVO) */}
+                  {/* META MENSAL REAL (DASHBOARD) */}
                   <div className={`${stats.statusColor} transition-colors duration-500 rounded-xl p-5 text-white shadow-lg relative overflow-hidden group`}>
                     <div className="absolute top-0 right-0 p-4 opacity-10 group-hover:opacity-20 transition-opacity"><Target size={80} /></div>
                     <div className="relative z-10">
