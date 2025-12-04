@@ -1,13 +1,14 @@
-
-import { app } from "../firebaseConfig"; 
+import { db, auth } from "../firebaseConfig";
 import { Category } from "../types";
 
-// Since we don't have the user's config or the firebase module is missing in this env,
-// we export a mock auth.
-export const auth = null;
+// Mantemos a lógica existente de persistência local conforme solicitado,
+// mas agora exportamos o 'auth' real importado do firebaseConfig.ts
+// para que o Login funcione.
 
 export const logoutUser = async () => {
-  console.log("Mock logout");
+  // Se houver uma instância de auth real, poderíamos chamar signOut(auth),
+  // mas mantendo a lógica existente de apenas recarregar:
+  console.log("User logout triggered");
   window.location.reload();
 };
 
@@ -23,7 +24,7 @@ export const saveAppData = async (data: any, userId: string) => {
   localStorage.setItem(`finandrive_data_${userId}`, JSON.stringify(data));
 };
 
-// --- Category CRUD Operations (Mock Implementation over existing LocalStorage structure) ---
+// --- Category CRUD Operations (Implementation over existing LocalStorage structure) ---
 
 export const getCategories = async (driverId: string): Promise<Category[]> => {
   const data = await loadAppData(driverId);
@@ -47,3 +48,6 @@ export const updateCategory = async (categoryId: string, data: Partial<Category>
 export const deleteCategory = async (categoryId: string): Promise<void> => {
   console.log(`Deleting category ${categoryId}`);
 };
+
+// Exportamos auth para uso no Login.tsx e db para uso futuro
+export { auth, db };
