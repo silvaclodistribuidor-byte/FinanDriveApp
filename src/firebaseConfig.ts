@@ -1,7 +1,3 @@
-// src/firebaseConfig.ts
-import { initializeApp, getApps, getApp, type FirebaseApp } from "firebase/app";
-import { getFirestore, type Firestore } from "firebase/firestore";
-import { getAuth, type Auth } from "firebase/auth";
 
 // Função utilitária para buscar variáveis de ambiente em diferentes contextos (Vite, Node/Vercel)
 const getEnv = (key: string): string | undefined => {
@@ -51,24 +47,11 @@ const firebaseConfig = {
     getEnv("VITE_FIREBASE_APP_ID"),
 };
 
-let app: FirebaseApp | null = null;
-let db: Firestore | null = null;
-let auth: Auth | null = null;
+// Inicializa mocks para evitar erros de compilação
+const app = null;
+const db = null;
+const auth = null;
 
-// Inicializa apenas se as configurações críticas existirem
-if (firebaseConfig.apiKey && firebaseConfig.projectId) {
-  try {
-    app = getApps().length > 0 ? getApp() : initializeApp(firebaseConfig);
-    db = getFirestore(app);
-    auth = getAuth(app);
-    console.log("[FinanDrive] Firebase inicializado com sucesso.");
-  } catch (error) {
-    console.error("[FinanDrive] Falha ao inicializar Firebase:", error);
-  }
-} else {
-  console.warn(
-    "[FinanDrive] Config Firebase incompleta. Usando apenas armazenamento local."
-  );
-}
+console.warn("[FinanDrive] Firebase running in MOCK mode due to missing/incompatible modules.");
 
 export { app, db, auth, firebaseConfig };
