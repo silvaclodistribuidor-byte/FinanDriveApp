@@ -27,7 +27,8 @@ import {
   ArrowUpCircle,
   CheckCircle2,
   AlertCircle,
-  LogOut
+  LogOut,
+  CalendarCheck
 } from 'lucide-react';
 import { PieChart, Pie, Cell, Tooltip, ResponsiveContainer, Legend } from 'recharts';
 import { StatCard } from './components/StatCard';
@@ -97,9 +98,13 @@ function App() {
   const [bills, setBills] = useState<Bill[]>(INITIAL_BILLS);
   const [categories, setCategories] = useState<string[]>(DEFAULT_CATEGORIES);
   
+  // New Settings State
+  const [workDays, setWorkDays] = useState<number[]>([1, 2, 3, 4, 5, 6]); // 0=Sun, 6=Sat (Generic Preference)
+  const [plannedWorkDates, setPlannedWorkDates] = useState<string[]>([]); // Specific dates YYYY-MM-DD
+  const [monthlySalaryGoal, setMonthlySalaryGoal] = useState<number>(0);
+
   // UI State
   const [isLoadingData, setIsLoadingData] = useState(false);
-  const [workDays, setWorkDays] = useState<number[]>([1, 2, 3, 4, 5, 6]);
   const [showValues, setShowValues] = useState(true);
   const [activeTab, setActiveTab] = useState<'dashboard' | 'bills' | 'history' | 'shift' | 'reports'>('dashboard');
   
@@ -132,7 +137,7 @@ function App() {
 
   const timerRef = useRef<number | null>(null);
 
-  // 1. Monitorar Autenticação
+  // 1. Monitor Authentication
   useEffect(() => {
     if(!auth) {
       setAuthLoading(false);
@@ -145,45 +150,53 @@ function App() {
     return () => unsubscribe();
   }, []);
 
-  // 2. Carregar dados quando o usuário muda
+  // 2. Load Data
   useEffect(() => {
     if (user) {
       setIsLoadingData(true);
       loadAppData(user.uid).then((data) => {
         if (data) {
           if (data.transactions) setTransactions(data.transactions);
-          else setTransactions([]); // Novo usuário limpa dados antigos da memória
+          else setTransactions([]);
           
           if (data.bills) setBills(data.bills);
           else setBills([]);
 
           if (data.categories) setCategories(data.categories);
+          
+          // Settings
+          if (data.workDays) setWorkDays(data.workDays);
+          if (data.plannedWorkDates) setPlannedWorkDates(data.plannedWorkDates);
+          if (data.monthlySalaryGoal) setMonthlySalaryGoal(data.monthlySalaryGoal);
 
-          // Carrega estado do turno se existir
           if (data.shiftState) setShiftState(data.shiftState);
         } else {
-          // Usuário novo, zera tudo para não mostrar dados de cache
           setTransactions([]);
           setBills([]);
-          // Mantém shiftState padrão (zerado)
         }
         setIsLoadingData(false);
       });
     }
   }, [user]);
 
-  // 3. Salvar dados quando mudam (apenas se logado e não estiver carregando)
+  // 3. Save Data
   useEffect(() => {
     if (!user || isLoadingData) return;
-    
-    // Inclui shiftState no payload
-    const payload = { transactions, bills, categories, shiftState };
+    const payload = { 
+      transactions, 
+      bills, 
+      categories, 
+      shiftState, 
+      workDays, 
+      plannedWorkDates, 
+      monthlySalaryGoal 
+    };
     saveAppData(payload, user.uid).catch((error) => {
       console.error("Erro ao salvar dados no Firestore:", error);
     });
-  }, [transactions, bills, categories, shiftState, user, isLoadingData]);
+  }, [transactions, bills, categories, shiftState, workDays, plannedWorkDates, monthlySalaryGoal, user, isLoadingData]);
 
-  // Timer do Turno
+  // Shift Timer
   useEffect(() => {
     if (shiftState.isActive && !shiftState.isPaused) {
       timerRef.current = window.setInterval(() => {
@@ -196,6 +209,34 @@ function App() {
       if (timerRef.current) clearInterval(timerRef.current);
     };
   }, [shiftState.isActive, shiftState.isPaused]);
+
+  // Initial Check: Populate planned dates if empty for current month based on generic preference
+  useEffect(() => {
+    if (!isLoadingData && user && workDays.length > 0) {
+      const today = new Date();
+      const currentMonthStr = `${today.getFullYear()}-${String(today.getMonth() + 1).padStart(2, '0')}`;
+      
+      // Check if we have ANY planned dates for current month
+      const hasPlanForThisMonth = plannedWorkDates.some(d => d.startsWith(currentMonthStr));
+      
+      if (!hasPlanForThisMonth) {
+        // Auto-populate based on workDays preference
+        const daysInMonth = new Date(today.getFullYear(), today.getMonth() + 1, 0).getDate();
+        const newDates = [...plannedWorkDates];
+        for (let i = 1; i <= daysInMonth; i++) {
+          const d = new Date(today.getFullYear(), today.getMonth(), i);
+          const dateStr = [d.getFullYear(), String(d.getMonth() + 1).padStart(2, '0'), String(d.getDate()).padStart(2, '0')].join('-');
+          if (workDays.includes(d.getDay())) {
+             newDates.push(dateStr);
+          }
+        }
+        // Only update if we actually added something
+        if (newDates.length > plannedWorkDates.length) {
+          setPlannedWorkDates(newDates);
+        }
+      }
+    }
+  }, [isLoadingData, user, workDays]); // Deliberately omitting plannedWorkDates from dep to avoid loop, though guarded inside.
 
   // --- Handlers ---
 
@@ -234,14 +275,10 @@ function App() {
     
     setShiftState(prev => {
       const newState = { ...prev };
-      
-      // Substituição de valores para Apps
       if (entryCategory === 'uber') newState.earnings.uber = value;
       else if (entryCategory === '99') newState.earnings.n99 = value;
       else if (entryCategory === 'indrive') newState.earnings.indrive = value;
       else if (entryCategory === 'private') newState.earnings.private = value;
-      
-      // Soma para KM e Despesas
       else if (entryCategory === 'km') newState.km += value;
       else if (entryCategory === 'expense') {
         newState.expenses += value;
@@ -299,61 +336,133 @@ function App() {
     return new Intl.NumberFormat('pt-BR', { style: 'currency', currency: 'BRL' }).format(val);
   };
 
-  // --- Calculations ---
+  // --- SMART CALCULATIONS ---
   const stats = useMemo(() => {
+    const todayStr = getTodayString();
+    const currentMonthPrefix = todayStr.substring(0, 7); // YYYY-MM
+
+    // 1. Basic Stats
     const totalIncome = transactions.filter(t => t.type === TransactionType.INCOME).reduce((acc, curr) => acc + curr.amount, 0);
     const totalExpense = transactions.filter(t => t.type === TransactionType.EXPENSE).reduce((acc, curr) => acc + curr.amount, 0);
-    const incomeTransactions = transactions.filter(t => t.type === TransactionType.INCOME);
-    const totalKm = incomeTransactions.reduce((acc, curr) => acc + (curr.mileage || 0), 0);
-    const totalHours = incomeTransactions.reduce((acc, curr) => acc + (curr.durationHours || 0), 0);
-    const earningsPerKm = totalKm > 0 ? totalIncome / totalKm : 0;
-    const earningsPerHour = totalHours > 0 ? totalIncome / totalHours : 0;
     const netProfit = totalIncome - totalExpense;
     const profitMargin = totalIncome > 0 ? (netProfit / totalIncome) * 100 : 0;
+    
+    // 2. Current Month Income
+    const incomeThisMonth = transactions
+      .filter(t => t.type === TransactionType.INCOME && t.date.startsWith(currentMonthPrefix))
+      .reduce((acc, t) => acc + t.amount, 0);
+
+    // 3. Pending Bills Logic
     const pendingBillsTotal = bills.filter(b => !b.isPaid).reduce((acc, b) => acc + b.amount, 0);
     const sortedUnpaidBills = [...bills].filter(b => !b.isPaid).sort((a, b) => a.dueDate.localeCompare(b.dueDate));
-    const todayStr = getTodayString();
+
+    // 4. Remaining Planned Work Days
+    // Filter planned dates that are TODAY or in the FUTURE for this month
+    const remainingPlannedDates = plannedWorkDates
+      .filter(d => d.startsWith(currentMonthPrefix) && d >= todayStr)
+      .sort();
+    
+    const countRemainingDays = remainingPlannedDates.length || 1; // Avoid div by zero
+
+    // --- Goal Strategy A: Salary Based ---
+    // How much more do I need to reach MonthlySalaryGoal?
+    const salaryGoal = monthlySalaryGoal || 0;
+    const amountNeededForSalary = Math.max(0, salaryGoal - incomeThisMonth);
+    const dailyGoalBasedOnSalary = amountNeededForSalary / countRemainingDays;
+
+    // --- Goal Strategy B: Cashflow Based (Bills) ---
+    // Ensure we have enough cash by specific dates
+    let maxRequiredDailyRateForBills = 0;
+    let billGoalExplanation = "";
+    
+    // Simulate cashflow accumulation day by day using planned dates
+    if (sortedUnpaidBills.length > 0) {
+        let currentProjectedCash = Math.max(0, netProfit); // Start with current actual cash
+        // We only care about bills due in the future to influence future daily goals
+        // Past due bills increase immediate pressure (effectively due 'now')
+        
+        // This is a complex simulation, simplified here:
+        // Identify the "tightest" bill constraint.
+        // For each bill, determine (Amount - CurrentCash) / (WorkDaysUntilBill).
+        // Take the maximum of these requirements.
+        
+        for (const bill of sortedUnpaidBills) {
+            const billDate = bill.dueDate;
+            // Count work days from today until bill date (inclusive)
+            const availableWorkDays = remainingPlannedDates.filter(d => d <= billDate).length;
+            const daysToCover = availableWorkDays === 0 ? 1 : availableWorkDays; // If due today/past, need it today (1 day)
+
+            // Current net profit considers all past expenses/income.
+            // We need to cover this specific bill amount.
+            // Simplified: Treat all unpaid bills as a stack to clear.
+            // If we have cash in hand, great. If not, divide shortage by days.
+            
+            // NOTE: A robust system would order all inflows/outflows. 
+            // Here we use a conservative approach: 
+            // Total Pending Bills / Total Remaining Days is the baseline. 
+            // But if a big bill is due in 2 days, we spike the rate.
+            
+            // Let's assume cash in hand covers previous bills.
+            // New Requirement = BillAmount / DaysToCover.
+            // But we need to account for the CUMULATIVE need.
+            
+             // Revert to the accumulation logic from previous version, adapted to planned dates:
+             // We need to reach 'CumulativeBillTotal' by 'BillDate'.
+        }
+        
+        // Re-implementing the robust loop from original code, but using plannedWorkDates:
+        let cumulativeBillTotal = 0;
+        const startingCash = Math.max(0, netProfit); 
+        
+        for (const bill of sortedUnpaidBills) {
+            cumulativeBillTotal += bill.amount;
+            const totalNeededForMilestone = cumulativeBillTotal - startingCash;
+            
+            if (totalNeededForMilestone > 0) {
+                 const billDueStr = bill.dueDate;
+                 const workDaysUntilBill = remainingPlannedDates.filter(d => d <= billDueStr).length || 1;
+                 const requiredRate = totalNeededForMilestone / workDaysUntilBill;
+                 
+                 if (requiredRate > maxRequiredDailyRateForBills) {
+                     maxRequiredDailyRateForBills = requiredRate;
+                     billGoalExplanation = `Foco: Quitar ${bill.description}`;
+                 }
+            }
+        }
+    }
+
+    // --- Final Decision ---
+    // The goal is the higher of the two: meet the salary ambition OR pay the bills.
+    let finalDailyGoal = 0;
+    let goalExplanation = "";
+
+    if (dailyGoalBasedOnSalary >= maxRequiredDailyRateForBills) {
+        finalDailyGoal = dailyGoalBasedOnSalary;
+        goalExplanation = salaryGoal > 0 
+            ? `Meta para atingir salário de ${formatCurrency(salaryGoal, true)}`
+            : "Defina uma meta salarial nas configurações.";
+    } else {
+        finalDailyGoal = maxRequiredDailyRateForBills;
+        goalExplanation = `Prioridade: ${billGoalExplanation || 'Cobrir contas pendentes'}`;
+    }
+
+    // Earnings Today
     const earningsToday = transactions.filter(t => t.type === TransactionType.INCOME && t.date === todayStr).reduce((acc, t) => acc + t.amount, 0);
 
-    let maxRequiredDailyRate = 0;
-    let goalExplanation = "";
-    let cumulativeBillTotal = 0;
-    const startingCash = Math.max(0, netProfit);
-    const todayDate = new Date();
-    todayDate.setHours(0, 0, 0, 0);
-
-    if (sortedUnpaidBills.length === 0) {
-      maxRequiredDailyRate = 0;
-      goalExplanation = "Parabéns! Nenhuma conta pendente.";
-    } else {
-      for (const bill of sortedUnpaidBills) {
-        cumulativeBillTotal += bill.amount;
-        const totalNeededForThisMilestone = cumulativeBillTotal - startingCash;
-        if (totalNeededForThisMilestone <= 0) continue;
-        const dueDate = parseDateFromInput(bill.dueDate);
-        let workingDays = 0;
-        const tempDate = new Date(todayDate);
-        if (dueDate < todayDate) workingDays = 1;
-        else {
-          const iterDate = new Date(tempDate);
-          while (iterDate <= dueDate) {
-            if (workDays.includes(iterDate.getDay())) workingDays++;
-            iterDate.setDate(iterDate.getDate() + 1);
-          }
-        }
-        if (workingDays === 0) workingDays = 1;
-        const requiredRateForThisBill = totalNeededForThisMilestone / workingDays;
-        if (requiredRateForThisBill > maxRequiredDailyRate) {
-          maxRequiredDailyRate = requiredRateForThisBill;
-          const dayLabel = workingDays === 1 ? 'dia' : 'dias';
-          goalExplanation = `Foco: Quitar ${bill.description} em ${workingDays} ${dayLabel}.`;
-        }
-      }
-    }
-    if (maxRequiredDailyRate > 0 && !goalExplanation) goalExplanation = "Calculada para garantir o pagamento de todas as contas.";
-    
-    return { totalIncome, totalExpense, netProfit, profitMargin, earningsPerKm, earningsPerHour, dailyGoal: maxRequiredDailyRate, pendingBillsTotal, earningsToday, goalExplanation };
-  }, [transactions, bills, workDays]);
+    return { 
+        totalIncome, 
+        totalExpense, 
+        netProfit, 
+        profitMargin, 
+        dailyGoal: finalDailyGoal, 
+        pendingBillsTotal, 
+        earningsToday, 
+        goalExplanation,
+        incomeThisMonth,
+        remainingDays: countRemainingDays,
+        salaryGoal
+    };
+  }, [transactions, bills, plannedWorkDates, monthlySalaryGoal]);
 
   const billsSummary = useMemo(() => ({
     paid: bills.filter(b => b.isPaid).reduce((acc, b) => acc + b.amount, 0),
@@ -401,8 +510,7 @@ function App() {
   const currentShiftTotal = shiftState.earnings.uber + shiftState.earnings.n99 + shiftState.earnings.indrive + shiftState.earnings.private;
   const currentShiftLiquid = currentShiftTotal - shiftState.expenses;
   const currentShiftMinutes = Math.floor(shiftState.elapsedSeconds / 60);
-  const currentShiftHoursFromMinutes = currentShiftMinutes / 60;
-  const currentShiftRph = (currentShiftMinutes > 0) ? currentShiftTotal / currentShiftHoursFromMinutes : 0;
+  const currentShiftRph = (currentShiftMinutes > 0) ? currentShiftTotal / (currentShiftMinutes / 60) : 0;
   const currentShiftRpk = shiftState.km > 0 ? currentShiftTotal / shiftState.km : 0;
   const currentShiftHoursPrecise = shiftState.elapsedSeconds / 3600;
 
@@ -440,11 +548,6 @@ function App() {
     // Reseta o estado do turno (inativo)
     const resetShiftState = { isActive: false, isPaused: false, startTime: null, elapsedSeconds: 0, earnings: { uber: 0, n99: 0, indrive: 0, private: 0 }, expenses: 0, expenseList: [], km: 0 };
     setShiftState(resetShiftState);
-
-    // Força salvamento imediato do histórico E do estado resetado
-    if (user) {
-      saveAppData({ transactions: newTransactions, bills, categories, shiftState: resetShiftState }, user.uid);
-    }
   };
 
   const handleSaveBill = (billData: Omit<Bill, 'id'>) => {
@@ -619,13 +722,38 @@ function App() {
                           <p className="text-indigo-100 text-sm font-medium mb-1 flex items-center gap-1"><Target size={14} /> Meta Diária (Real)</p>
                           <h3 className="text-3xl font-bold mb-1">{formatCurrency(stats.dailyGoal)}</h3>
                         </div>
-                        <button onClick={() => setIsSettingsModalOpen(true)} className="p-2 bg-white/10 hover:bg-white/20 rounded-lg text-white transition-colors z-20 backdrop-blur-sm" title="Configurar Dias de Trabalho"><Settings size={20} /></button>
+                        <button onClick={() => setIsSettingsModalOpen(true)} className="p-2 bg-white/10 hover:bg-white/20 rounded-lg text-white transition-colors z-20 backdrop-blur-sm" title="Configurar Metas e Dias"><Settings size={20} /></button>
                       </div>
-                      <p className="text-xs text-indigo-200 mt-1 opacity-90 leading-tight">{stats.dailyGoal === 0 ? 'Parabéns! Seu caixa cobre suas contas futuras.' : stats.goalExplanation}</p>
+                      <p className="text-xs text-indigo-200 mt-1 opacity-90 leading-tight">{stats.dailyGoal === 0 ? 'Parabéns! Seu caixa cobre suas contas e metas.' : stats.goalExplanation}</p>
                     </div>
                   </div>
                   <StatCard title="Lucro Líquido" value={formatCurrency(stats.netProfit)} icon={Wallet} colorClass="bg-slate-800" trend={`${stats.profitMargin.toFixed(0)}% Margem`} trendUp={stats.profitMargin > 30} />
                 </div>
+                
+                {/* Progress Bar for Salary Goal */}
+                {stats.salaryGoal > 0 && (
+                   <div className="bg-white p-4 rounded-xl shadow-sm border border-slate-200 flex flex-col gap-2">
+                      <div className="flex justify-between text-sm font-bold text-slate-700">
+                        <span>Progresso Mensal</span>
+                        <span>{((stats.incomeThisMonth / stats.salaryGoal) * 100).toFixed(1)}%</span>
+                      </div>
+                      <div className="w-full h-3 bg-slate-100 rounded-full overflow-hidden">
+                        <div 
+                          className="h-full bg-emerald-500 rounded-full transition-all duration-1000 ease-out" 
+                          style={{ width: `${Math.min(100, (stats.incomeThisMonth / stats.salaryGoal) * 100)}%` }} 
+                        />
+                      </div>
+                      <div className="flex justify-between text-xs text-slate-500">
+                         <span>Realizado: {formatCurrency(stats.incomeThisMonth)}</span>
+                         <span>Meta: {formatCurrency(stats.salaryGoal)}</span>
+                      </div>
+                      <div className="flex items-center gap-1 text-xs text-indigo-600 mt-1">
+                        <CalendarCheck size={12} />
+                        <span>Restam {stats.remainingDays} dias de trabalho planejados.</span>
+                      </div>
+                   </div>
+                )}
+
                 <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
                   <div className="lg:col-span-2 bg-white p-6 rounded-2xl shadow-sm border border-slate-200">
                     <div className="flex justify-between items-center mb-6"><h3 className="font-bold text-slate-800">Ganhos vs Despesas</h3><div className="text-xs text-slate-500">Visão Geral</div></div>
@@ -766,7 +894,20 @@ function App() {
       <ShiftModal isOpen={isShiftModalOpen} onClose={() => setIsShiftModalOpen(false)} onSave={handleSaveShift} initialData={shiftState.isActive || shiftState.isPaused ? { amount: currentShiftTotal, mileage: shiftState.km, durationHours: currentShiftHoursPrecise } : null} />
       <ShiftEntryModal isOpen={entryModalOpen} onClose={() => setEntryModalOpen(false)} category={entryCategory} onSave={handleEntrySave} categories={categories} />
       <BillModal isOpen={isBillModalOpen} onClose={() => { setIsBillModalOpen(false); setEditingBill(null); }} onSave={handleSaveBill} initialData={editingBill} categories={categories} />
-      <SettingsModal isOpen={isSettingsModalOpen} onClose={() => setIsSettingsModalOpen(false)} workDays={workDays} onSaveWorkDays={setWorkDays} categories={categories} onAddCategory={handleAddCategory} onEditCategory={handleEditCategory} onDeleteCategory={handleDeleteCategory} />
+      <SettingsModal 
+        isOpen={isSettingsModalOpen} 
+        onClose={() => setIsSettingsModalOpen(false)} 
+        workDays={workDays} 
+        onSaveWorkDays={setWorkDays} 
+        plannedWorkDates={plannedWorkDates}
+        onSavePlannedDates={setPlannedWorkDates}
+        monthlySalaryGoal={monthlySalaryGoal}
+        onSaveSalaryGoal={setMonthlySalaryGoal}
+        categories={categories} 
+        onAddCategory={handleAddCategory} 
+        onEditCategory={handleEditCategory} 
+        onDeleteCategory={handleDeleteCategory} 
+      />
     </div>
   );
 }
