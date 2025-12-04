@@ -30,7 +30,8 @@ import {
   LogOut,
   CalendarCheck,
   AlertTriangle,
-  TrendingUp
+  TrendingUp,
+  Tags
 } from 'lucide-react';
 import { PieChart, Pie, Cell, Tooltip, ResponsiveContainer, Legend } from 'recharts';
 import { StatCard } from './components/StatCard';
@@ -42,7 +43,7 @@ import { SettingsModal } from './components/SettingsModal';
 import { ReportsTab } from './components/ReportsTab';
 import { Login } from './components/Login';
 import { loadAppData, saveAppData, auth, logoutUser } from "./services/firestoreService";
-import { Transaction, TransactionType, ExpenseCategory, Bill, ShiftState, DEFAULT_CATEGORIES } from './types';
+import { Transaction, TransactionType, ExpenseCategory, Bill, ShiftState, DEFAULT_CATEGORIES, Category } from './types';
 import { onAuthStateChanged, User } from "firebase/auth";
 
 const getTodayString = () => {
@@ -98,7 +99,7 @@ function App() {
   // App Data State
   const [transactions, setTransactions] = useState<Transaction[]>(INITIAL_TRANSACTIONS);
   const [bills, setBills] = useState<Bill[]>(INITIAL_BILLS);
-  const [categories, setCategories] = useState<string[]>(DEFAULT_CATEGORIES);
+  const [categories, setCategories] = useState<Category[]>(DEFAULT_CATEGORIES);
   
   // New Settings State
   const [workDays, setWorkDays] = useState<number[]>([1, 2, 3, 4, 5, 6]); // 0=Sun, 6=Sat (Generic Preference)
@@ -164,7 +165,22 @@ function App() {
           if (data.bills) setBills(data.bills);
           else setBills([]);
 
-          if (data.categories) setCategories(data.categories);
+          // Migration logic: Check if categories is string[] and convert to Category[]
+          if (data.categories) {
+            if (data.categories.length > 0 && typeof data.categories[0] === 'string') {
+               const migratedCats: Category[] = data.categories.map((c: string, i: number) => ({
+                 id: `migrated_${i}_${Date.now()}`,
+                 name: c,
+                 type: 'both',
+                 driverId: user.uid
+               }));
+               setCategories(migratedCats);
+            } else {
+               setCategories(data.categories);
+            }
+          } else {
+            setCategories(DEFAULT_CATEGORIES);
+          }
           
           // Settings
           if (data.workDays) setWorkDays(data.workDays);
@@ -175,6 +191,7 @@ function App() {
         } else {
           setTransactions([]);
           setBills([]);
+          setCategories(DEFAULT_CATEGORIES);
         }
         setIsLoadingData(false);
       });
@@ -212,17 +229,15 @@ function App() {
     };
   }, [shiftState.isActive, shiftState.isPaused]);
 
-  // Initial Check: Populate planned dates if empty for current month based on generic preference
+  // Initial Check: Populate planned dates if empty
   useEffect(() => {
     if (!isLoadingData && user && workDays.length > 0) {
       const today = new Date();
       const currentMonthStr = `${today.getFullYear()}-${String(today.getMonth() + 1).padStart(2, '0')}`;
       
-      // Check if we have ANY planned dates for current month
       const hasPlanForThisMonth = plannedWorkDates.some(d => d.startsWith(currentMonthStr));
       
       if (!hasPlanForThisMonth) {
-        // Auto-populate based on workDays preference
         const daysInMonth = new Date(today.getFullYear(), today.getMonth() + 1, 0).getDate();
         const newDates = [...plannedWorkDates];
         for (let i = 1; i <= daysInMonth; i++) {
@@ -232,7 +247,6 @@ function App() {
              newDates.push(dateStr);
           }
         }
-        // Only update if we actually added something
         if (newDates.length > plannedWorkDates.length) {
           setPlannedWorkDates(newDates);
         }
@@ -249,21 +263,26 @@ function App() {
     setShiftState({ isActive: false, isPaused: false, startTime: null, elapsedSeconds: 0, earnings: { uber: 0, n99: 0, indrive: 0, private: 0 }, expenses: 0, expenseList: [], km: 0 });
   };
 
-  const handleAddCategory = (name: string) => {
-    if (name && !categories.includes(name)) {
-      setCategories([...categories, name]);
-    }
+  // Category CRUD Handlers (Updating Local State)
+  const handleAddCategory = (name: string, type: 'income' | 'expense' | 'both') => {
+    if (!name) return;
+    const newCat: Category = {
+      id: `cat_${Date.now()}_${Math.random().toString(36).substr(2,5)}`,
+      name,
+      type,
+      driverId: user?.uid
+    };
+    setCategories(prev => [...prev, newCat]);
   };
 
-  const handleEditCategory = (oldName: string, newName: string) => {
-    if (!newName || categories.includes(newName)) return;
-    setCategories(prev => prev.map(c => c === oldName ? newName : c));
-    setTransactions(prev => prev.map(t => t.category === oldName ? { ...t, category: newName } : t));
-    setBills(prev => prev.map(b => b.category === oldName ? { ...b, category: newName } : b));
+  const handleEditCategory = (id: string, name: string, type: 'income' | 'expense' | 'both') => {
+    setCategories(prev => prev.map(c => c.id === id ? { ...c, name, type } : c));
+    // Optionally update transactions/bills that reference this category name for consistency if you want,
+    // but we are using IDs now primarily, though the modal still saves names.
   };
 
-  const handleDeleteCategory = (name: string) => {
-    setCategories(prev => prev.filter(c => c !== name));
+  const handleDeleteCategory = (id: string) => {
+    setCategories(prev => prev.filter(c => c.id !== id));
   };
 
   const handleOpenEntry = (category: 'uber' | '99' | 'indrive' | 'private' | 'km' | 'expense') => {
@@ -338,123 +357,79 @@ function App() {
     return new Intl.NumberFormat('pt-BR', { style: 'currency', currency: 'BRL' }).format(val);
   };
 
-  // --- SMART CALCULATIONS ---
+  // --- SMART CALCULATIONS (MONTHLY GOAL) ---
   const stats = useMemo(() => {
     const todayStr = getTodayString();
     const currentMonthPrefix = todayStr.substring(0, 7); // YYYY-MM
-    const todayDate = new Date();
-    todayDate.setHours(0,0,0,0);
-
+    
     // 1. Basic Stats
     const totalIncome = transactions.filter(t => t.type === TransactionType.INCOME).reduce((acc, curr) => acc + curr.amount, 0);
     const totalExpense = transactions.filter(t => t.type === TransactionType.EXPENSE).reduce((acc, curr) => acc + curr.amount, 0);
     const netProfit = totalIncome - totalExpense;
     const profitMargin = totalIncome > 0 ? (netProfit / totalIncome) * 100 : 0;
     
-    // 2. Current Month Income (for Salary Goal)
+    // 2. Monthly Vars
+    // D = Total Bills for the Month (using bills that have dueDate in current month OR are pending if you prefer, but let's stick to month filter as common for budgeting)
+    // Actually, prompt says "soma de todas as contas do mês". Let's assume all bills in the list are active/relevant. 
+    // To be precise, let's filter bills due in this month.
+    const billsThisMonth = bills.filter(b => b.dueDate.startsWith(currentMonthPrefix));
+    const totalMonthlyExpenses = billsThisMonth.reduce((acc, b) => acc + b.amount, 0); 
+    // D
+    const D = totalMonthlyExpenses;
+
+    // F = Total Income This Month
     const incomeThisMonth = transactions
       .filter(t => t.type === TransactionType.INCOME && t.date.startsWith(currentMonthPrefix))
       .reduce((acc, t) => acc + t.amount, 0);
+    // F
+    const F = incomeThisMonth;
 
-    // 3. Pending Bills Logic
+    // S = Monthly Salary Goal
+    const S = monthlySalaryGoal || 0;
+
+    // Calculations
+    const expensesPaid = Math.min(F, D);
+    const expensesRemaining = Math.max(0, D - expensesPaid);
+
+    const salaryAccumulated = Math.max(0, F - D);
+    const salaryRemaining = (S > 0) ? Math.max(0, S - salaryAccumulated) : 0;
+
+    // Status & Colors
+    let statusColor = "bg-emerald-600";
+    let statusMessage = "Parabéns! Meta mensal atingida.";
+    let displayGoal = 0;
+
+    if (S > 0) {
+        displayGoal = S;
+        if (F < D) {
+            statusColor = "bg-rose-600";
+            statusMessage = `Faltam ${formatCurrency(expensesRemaining, true)} para garantir as contas do mês!`;
+        } else if (F < S) {
+            statusColor = "bg-amber-500";
+            statusMessage = `Contas cobertas. Faltam ${formatCurrency(salaryRemaining, true)} para o salário.`;
+        } else {
+            statusColor = "bg-emerald-600";
+            statusMessage = "Parabéns! Você atingiu sua meta salarial neste mês.";
+        }
+    } else {
+        // No salary goal
+        displayGoal = D;
+        if (F < D) {
+            statusColor = "bg-rose-600";
+            statusMessage = `Faltam ${formatCurrency(expensesRemaining, true)} para cobrir as despesas!`;
+        } else {
+            statusColor = "bg-emerald-600";
+            statusMessage = "Contas do mês garantidas!";
+        }
+    }
+
     const pendingBillsTotal = bills.filter(b => !b.isPaid).reduce((acc, b) => acc + b.amount, 0);
-    const sortedUnpaidBills = [...bills].filter(b => !b.isPaid).sort((a, b) => a.dueDate.localeCompare(b.dueDate));
 
-    // 4. Remaining Planned Work Days
+    // Remaining Planned Work Days (for progress bar context)
     const remainingPlannedDates = plannedWorkDates
       .filter(d => d.startsWith(currentMonthPrefix) && d >= todayStr)
       .sort();
-    
-    const countRemainingDays = remainingPlannedDates.length || 1; 
-
-    // --- Goal Strategy A: Salary Based (GROSS TARGET) ---
-    // User wants to earn X gross in the month. 
-    // Target = (Goal - EarnedSoFar) / DaysLeft
-    const salaryGoal = monthlySalaryGoal || 0;
-    let dailyGoalBasedOnSalary = 0;
-    if (salaryGoal > 0) {
-        const remainingToEarn = Math.max(0, salaryGoal - incomeThisMonth);
-        dailyGoalBasedOnSalary = remainingToEarn / countRemainingDays;
-    }
-
-    // --- Goal Strategy B: Cashflow Based (MINIMUM FOR BILLS) ---
-    // Ensure we have enough cash by specific dates.
-    // "Steepest Hill" approach.
-    let maxRequiredDailyRateForBills = 0;
-    let billGoalExplanation = "";
-    
-    if (sortedUnpaidBills.length > 0) {
-        let cumulativeBillTotal = 0;
-        const startingCash = Math.max(0, netProfit); 
-        
-        for (const bill of sortedUnpaidBills) {
-            cumulativeBillTotal += bill.amount;
-            const totalNeededForMilestone = cumulativeBillTotal - startingCash;
-            
-            if (totalNeededForMilestone > 0) {
-                 const billDueStr = bill.dueDate;
-                 const workDaysUntilBill = remainingPlannedDates.filter(d => d <= billDueStr).length || 1;
-                 const requiredRate = totalNeededForMilestone / workDaysUntilBill;
-                 
-                 if (requiredRate > maxRequiredDailyRateForBills) {
-                     maxRequiredDailyRateForBills = requiredRate;
-                     billGoalExplanation = `Prioridade: Quitar ${bill.description}`;
-                 }
-            }
-        }
-    }
-
-    // --- Final Decision (Layered) ---
-    // expenseTargetToday = Minimum required to survive (floor)
-    // salaryTargetToday = Desired Gross Income (ceiling/target)
-    // finalDailyGoal = Max(Minimum, Target)
-    
-    const expenseTargetToday = maxRequiredDailyRateForBills;
-    const salaryTargetToday = dailyGoalBasedOnSalary;
-    
-    let finalDailyGoal = 0;
-    let goalExplanation = "";
-
-    if (salaryTargetToday > 0) {
-        // We have a salary goal.
-        if (expenseTargetToday > salaryTargetToday) {
-            // Danger: Bills require more than the salary pace.
-            finalDailyGoal = expenseTargetToday;
-            goalExplanation = `Atenção: A meta salarial não cobre as contas de curto prazo! ${billGoalExplanation}`;
-        } else {
-            // Standard: Salary pace covers bills.
-            finalDailyGoal = salaryTargetToday;
-            goalExplanation = `Foco na meta salarial de ${formatCurrency(salaryGoal, true)} mensais.`;
-        }
-    } else {
-        // No salary goal, pure survival mode.
-        finalDailyGoal = expenseTargetToday;
-        goalExplanation = expenseTargetToday > 0 
-            ? "Foco total em cobrir contas pendentes." 
-            : "Contas em dia. Defina uma meta de salário.";
-    }
-
-    // Earnings Today
-    const earningsToday = transactions.filter(t => t.type === TransactionType.INCOME && t.date === todayStr).reduce((acc, t) => acc + t.amount, 0);
-
-    // Status Colors
-    // Red: Haven't covered expenses yet
-    // Orange: Covered expenses, haven't reached full goal
-    // Green: Hit full goal
-    let statusColor = "bg-emerald-600"; 
-    
-    if (finalDailyGoal > 0) {
-        if (earningsToday < expenseTargetToday) {
-             statusColor = "bg-rose-600"; // Critical
-        } else if (earningsToday < finalDailyGoal) {
-             statusColor = "bg-amber-500"; // Warning (Bills ok, Salary not yet)
-        } else {
-             statusColor = "bg-emerald-600"; // Success
-        }
-    } else {
-        // If goal is 0 (all paid, no salary goal), green unless user wants to work
-        statusColor = "bg-emerald-600";
-    }
+    const remainingDays = remainingPlannedDates.length;
 
     return { 
         totalIncome, 
@@ -462,18 +437,16 @@ function App() {
         netProfit, 
         profitMargin, 
         
-        // Exposed Values
-        finalDailyGoal,      // The big number
-        expenseTargetToday,  // The floor
-        salaryTargetToday,   // The ambition
-        
+        // Monthly Card Vars
+        displayGoal,
+        D,
+        F,
+        S,
         statusColor,
+        statusMessage,
+        
         pendingBillsTotal, 
-        earningsToday, 
-        goalExplanation,
-        incomeThisMonth,
-        remainingDays: countRemainingDays,
-        salaryGoal
+        remainingDays
     };
   }, [transactions, bills, plannedWorkDates, monthlySalaryGoal]);
 
@@ -551,7 +524,7 @@ function App() {
       type: TransactionType.EXPENSE,
       amount: exp.amount,
       description: `${exp.description} (Turno)`,
-      category: exp.category,
+      category: exp.category, // This might need mapping if we want strict category IDs, but keeping as string for now for compatibility
       date: data.date
     }));
     
@@ -728,44 +701,40 @@ function App() {
               <div className="space-y-6 animate-in fade-in slide-in-from-bottom-4 duration-500">
                 <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-2 gap-4">
                   
-                  {/* META DIÁRIA REAL (ATUALIZADO) */}
+                  {/* META MENSAL REAL (NOVO) */}
                   <div className={`${stats.statusColor} transition-colors duration-500 rounded-xl p-5 text-white shadow-lg relative overflow-hidden group`}>
                     <div className="absolute top-0 right-0 p-4 opacity-10 group-hover:opacity-20 transition-opacity"><Target size={80} /></div>
                     <div className="relative z-10">
                       <div className="flex justify-between items-start">
                         <div>
-                          <p className="text-white/80 text-sm font-medium mb-1 flex items-center gap-1"><Target size={14} /> Meta Diária (Real)</p>
-                          <h3 className="text-3xl font-bold mb-1">{formatCurrency(stats.finalDailyGoal)}</h3>
+                          <p className="text-white/80 text-sm font-medium mb-1 flex items-center gap-1"><Target size={14} /> Meta Mensal (Real)</p>
+                          <h3 className="text-3xl font-bold mb-1">{formatCurrency(stats.displayGoal)}</h3>
                         </div>
-                        <button onClick={() => setIsSettingsModalOpen(true)} className="p-2 bg-white/10 hover:bg-white/20 rounded-lg text-white transition-colors z-20 backdrop-blur-sm" title="Configurar Metas e Dias"><Settings size={20} /></button>
+                        <button onClick={() => setIsSettingsModalOpen(true)} className="p-2 bg-white/10 hover:bg-white/20 rounded-lg text-white transition-colors z-20 backdrop-blur-sm" title="Configurar Metas e Categorias"><Settings size={20} /></button>
                       </div>
                       
                       {/* Breakdown */}
                       <div className="mt-3 space-y-1 bg-black/10 p-2 rounded-lg">
                          <div className="flex justify-between text-xs font-medium">
-                            <span className="opacity-80 flex items-center gap-1"><AlertCircle size={10} /> Mínimo p/ Contas:</span>
-                            <span>{formatCurrency(stats.expenseTargetToday)}</span>
+                            <span className="opacity-80 flex items-center gap-1"><AlertCircle size={10} /> Mínimo p/ Contas (mês):</span>
+                            <span>{formatCurrency(stats.D)}</span>
                          </div>
-                         {stats.salaryGoal > 0 && (
+                         {stats.S > 0 && (
                            <div className="flex justify-between text-xs font-medium">
-                              <span className="opacity-80 flex items-center gap-1"><TrendingUp size={10} /> Meta Salarial:</span>
-                              <span>{formatCurrency(stats.salaryTargetToday)}</span>
+                              <span className="opacity-80 flex items-center gap-1"><TrendingUp size={10} /> Meta Salarial (mês):</span>
+                              <span>{formatCurrency(stats.S)}</span>
                            </div>
                          )}
                          <div className="h-px bg-white/10 my-1"></div>
                          <div className="flex justify-between text-xs font-bold">
-                            <span className="opacity-80">Faturado hoje:</span>
-                            <span>{formatCurrency(stats.earningsToday)}</span>
+                            <span className="opacity-80">Faturado no mês:</span>
+                            <span>{formatCurrency(stats.F)}</span>
                          </div>
                       </div>
 
                       <p className="text-xs text-white/90 mt-2 leading-tight flex items-center gap-1">
-                         {stats.earningsToday < stats.expenseTargetToday && <AlertTriangle size={12} className="text-white" />}
-                         {stats.earningsToday < stats.expenseTargetToday 
-                            ? `Faltam ${formatCurrency(stats.expenseTargetToday - stats.earningsToday)} para o mínimo!` 
-                            : stats.earningsToday < stats.finalDailyGoal 
-                                ? "Contas ok! Buscando meta de salário." 
-                                : "Excelente! Meta total batida."}
+                         {stats.F < stats.D && <AlertTriangle size={12} className="text-white" />}
+                         {stats.statusMessage}
                       </p>
                     </div>
                   </div>
@@ -774,25 +743,25 @@ function App() {
                 </div>
                 
                 {/* Progress Bar for Salary Goal */}
-                {stats.salaryGoal > 0 && (
+                {stats.S > 0 && (
                    <div className="bg-white p-4 rounded-xl shadow-sm border border-slate-200 flex flex-col gap-2">
                       <div className="flex justify-between text-sm font-bold text-slate-700">
                         <span>Progresso Mensal</span>
-                        <span>{Math.min(100, (stats.incomeThisMonth / stats.salaryGoal) * 100).toFixed(1)}%</span>
+                        <span>{Math.min(100, (stats.F / stats.S) * 100).toFixed(1)}%</span>
                       </div>
                       <div className="w-full h-3 bg-slate-100 rounded-full overflow-hidden">
                         <div 
                           className="h-full bg-emerald-500 rounded-full transition-all duration-1000 ease-out" 
-                          style={{ width: `${Math.min(100, (stats.incomeThisMonth / stats.salaryGoal) * 100)}%` }} 
+                          style={{ width: `${Math.min(100, (stats.F / stats.S) * 100)}%` }} 
                         />
                       </div>
                       <div className="flex justify-between text-xs text-slate-500">
-                         <span>Realizado: {formatCurrency(stats.incomeThisMonth)}</span>
-                         <span>Meta: {formatCurrency(stats.salaryGoal)}</span>
+                         <span>Realizado: {formatCurrency(stats.F)}</span>
+                         <span>Meta: {formatCurrency(stats.S)}</span>
                       </div>
                       <div className="flex items-center gap-1 text-xs text-indigo-600 mt-1">
                         <CalendarCheck size={12} />
-                        <span>Restam {stats.remainingDays} dias de trabalho planejados.</span>
+                        <span>Restam {stats.remainingDays} dias de trabalho planejados neste mês.</span>
                       </div>
                    </div>
                 )}
