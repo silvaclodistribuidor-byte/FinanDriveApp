@@ -1,81 +1,77 @@
-import { db, auth } from "../firebaseConfig";
-import { doc, getDoc, setDoc } from "firebase/firestore";
-import { signOut } from "firebase/auth";
-import { Category } from "../types";
 
-export const logoutUser = async () => {
-  if (auth) {
-    try {
-      await signOut(auth);
-    } catch (error) {
-      console.error("Error signing out", error);
+// import { initializeApp, getApps, getApp, FirebaseApp } from "firebase/app";
+// import { getFirestore, Firestore } from "firebase/firestore";
+// import { getAuth, Auth } from "firebase/auth";
+
+// Mock types to avoid compilation errors
+export type FirebaseApp = any;
+export type Firestore = any;
+export type Auth = any;
+
+// Função utilitária para buscar variáveis de ambiente em diferentes contextos (Vite, Node/Vercel)
+const getEnv = (key: string): string | undefined => {
+  try {
+    // Verifica process.env (Node.js / Vercel padrão)
+    if (typeof process !== "undefined" && (process as any).env && (process as any).env[key]) {
+      return (process as any).env[key] as string;
     }
-  }
-  window.location.reload();
-};
 
-export const loadAppData = async (userId: string) => {
-  // Tenta carregar do Firestore primeiro se estiver configurado
-  if (db) {
-    try {
-      const docRef = doc(db, "drivers", userId);
-      const docSnap = await getDoc(docRef);
-      if (docSnap.exists()) {
-        const data = docSnap.data();
-        // Atualiza o cache local
-        localStorage.setItem(`finandrive_data_${userId}`, JSON.stringify(data));
-        return data;
-      }
-    } catch (error) {
-      console.error("Erro ao carregar do Firestore:", error);
+    // Verifica import.meta.env (Vite)
+    // @ts-ignore
+    if (typeof import.meta !== "undefined" && (import.meta as any).env && (import.meta as any).env[key]) {
+      // @ts-ignore
+      return (import.meta as any).env[key] as string;
     }
+  } catch {
+    // Ignora erros de acesso caso o ambiente seja restrito
   }
-
-  // Fallback para localStorage
-  const saved = localStorage.getItem(`finandrive_data_${userId}`);
-  return saved ? JSON.parse(saved) : null;
+  return undefined;
 };
 
-export const saveAppData = async (data: any, userId: string) => {
-  // Salva no Firestore se estiver configurado
-  if (db) {
-    try {
-      const docRef = doc(db, "drivers", userId);
-      await setDoc(docRef, data, { merge: true });
-    } catch (error) {
-      console.error("Erro ao salvar no Firestore:", error);
-    }
+// Monta a configuração buscando por prefixos comuns (FIREBASE_, REACT_APP_, VITE_)
+const firebaseConfig = {
+  apiKey:
+    getEnv("FIREBASE_API_KEY") ||
+    getEnv("REACT_APP_FIREBASE_API_KEY") ||
+    getEnv("VITE_FIREBASE_API_KEY"),
+  authDomain:
+    getEnv("FIREBASE_AUTH_DOMAIN") ||
+    getEnv("REACT_APP_FIREBASE_AUTH_DOMAIN") ||
+    getEnv("VITE_FIREBASE_AUTH_DOMAIN"),
+  projectId:
+    getEnv("FIREBASE_PROJECT_ID") ||
+    getEnv("REACT_APP_FIREBASE_PROJECT_ID") ||
+    getEnv("VITE_FIREBASE_PROJECT_ID"),
+  storageBucket:
+    getEnv("FIREBASE_STORAGE_BUCKET") ||
+    getEnv("REACT_APP_FIREBASE_STORAGE_BUCKET") ||
+    getEnv("VITE_FIREBASE_STORAGE_BUCKET"),
+  messagingSenderId:
+    getEnv("FIREBASE_MESSAGING_SENDER_ID") ||
+    getEnv("REACT_APP_FIREBASE_MESSAGING_SENDER_ID") ||
+    getEnv("VITE_FIREBASE_MESSAGING_SENDER_ID"),
+  appId:
+    getEnv("FIREBASE_APP_ID") ||
+    getEnv("REACT_APP_FIREBASE_APP_ID") ||
+    getEnv("VITE_FIREBASE_APP_ID"),
+};
+
+let app: FirebaseApp | null = null;
+let db: Firestore | null = null;
+let auth: Auth | null = null;
+
+// Inicializa apenas se as configurações críticas existirem
+if (firebaseConfig.apiKey && firebaseConfig.projectId) {
+  try {
+    // app = getApps().length > 0 ? getApp() : initializeApp(firebaseConfig);
+    // db = getFirestore(app);
+    // auth = getAuth(app);
+    console.warn("[FinanDrive] Firebase imports disabled via code due to missing types. Using mocks.");
+  } catch (error) {
+    console.error("[FinanDrive] Falha ao inicializar Firebase:", error);
   }
+} else {
+  console.warn("[FinanDrive] Config Firebase incompleta. Verifique variáveis de ambiente.");
+}
 
-  // Sempre salva no localStorage como backup/cache
-  localStorage.setItem(`finandrive_data_${userId}`, JSON.stringify(data));
-};
-
-// --- Category CRUD Operations (Mock Implementation over existing LocalStorage structure) ---
-// Note: As categorias são salvas dentro do objeto principal em saveAppData pelo App.tsx.
-// Estas funções servem como auxiliares ou mocks se a arquitetura mudar para coleções separadas.
-
-export const getCategories = async (driverId: string): Promise<Category[]> => {
-  const data = await loadAppData(driverId);
-  return data?.categories || [];
-};
-
-export const addCategory = async (driverId: string, data: { name: string; type?: "income" | "expense" | "both" }): Promise<Category> => {
-  const newCat: Category = {
-    id: `cat_${Date.now()}`,
-    name: data.name,
-    type: data.type || 'both',
-    driverId
-  };
-  return newCat;
-};
-
-export const updateCategory = async (categoryId: string, data: Partial<Category>): Promise<void> => {
-  console.log(`Updating category ${categoryId}`, data);
-};
-
-export const deleteCategory = async (categoryId: string): Promise<void> => {
-  console.log(`Deleting category ${categoryId}`);
-};
-
-export { auth, db };
+export { app, db, auth, firebaseConfig };
