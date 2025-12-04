@@ -28,7 +28,9 @@ import {
   CheckCircle2,
   AlertCircle,
   LogOut,
-  CalendarCheck
+  CalendarCheck,
+  AlertTriangle,
+  TrendingUp
 } from 'lucide-react';
 import { PieChart, Pie, Cell, Tooltip, ResponsiveContainer, Legend } from 'recharts';
 import { StatCard } from './components/StatCard';
@@ -236,7 +238,7 @@ function App() {
         }
       }
     }
-  }, [isLoadingData, user, workDays]); // Deliberately omitting plannedWorkDates from dep to avoid loop, though guarded inside.
+  }, [isLoadingData, user, workDays]); 
 
   // --- Handlers ---
 
@@ -340,14 +342,16 @@ function App() {
   const stats = useMemo(() => {
     const todayStr = getTodayString();
     const currentMonthPrefix = todayStr.substring(0, 7); // YYYY-MM
+    const todayDate = new Date();
+    todayDate.setHours(0,0,0,0);
 
-    // 1. Basic Stats
+    // 1. Basic Stats (Cashflow)
     const totalIncome = transactions.filter(t => t.type === TransactionType.INCOME).reduce((acc, curr) => acc + curr.amount, 0);
     const totalExpense = transactions.filter(t => t.type === TransactionType.EXPENSE).reduce((acc, curr) => acc + curr.amount, 0);
-    const netProfit = totalIncome - totalExpense;
+    const netProfit = totalIncome - totalExpense; // This is our current cash on hand
     const profitMargin = totalIncome > 0 ? (netProfit / totalIncome) * 100 : 0;
     
-    // 2. Current Month Income
+    // 2. Current Month Stats
     const incomeThisMonth = transactions
       .filter(t => t.type === TransactionType.INCOME && t.date.startsWith(currentMonthPrefix))
       .reduce((acc, t) => acc + t.amount, 0);
@@ -356,111 +360,127 @@ function App() {
     const pendingBillsTotal = bills.filter(b => !b.isPaid).reduce((acc, b) => acc + b.amount, 0);
     const sortedUnpaidBills = [...bills].filter(b => !b.isPaid).sort((a, b) => a.dueDate.localeCompare(b.dueDate));
 
-    // 4. Remaining Planned Work Days
-    // Filter planned dates that are TODAY or in the FUTURE for this month
-    const remainingPlannedDates = plannedWorkDates
-      .filter(d => d.startsWith(currentMonthPrefix) && d >= todayStr)
-      .sort();
-    
-    const countRemainingDays = remainingPlannedDates.length || 1; // Avoid div by zero
+    // 4. Remaining Work Days Calculation (for entire month)
+    // Helper to count work days between two dates inclusive
+    const countWorkDays = (startStr: string, endStr: string) => {
+        return plannedWorkDates.filter(d => d >= startStr && d <= endStr).length;
+    };
 
-    // --- Goal Strategy A: Salary Based ---
-    // How much more do I need to reach MonthlySalaryGoal?
-    const salaryGoal = monthlySalaryGoal || 0;
-    const amountNeededForSalary = Math.max(0, salaryGoal - incomeThisMonth);
-    const dailyGoalBasedOnSalary = amountNeededForSalary / countRemainingDays;
+    const endOfMonth = new Date(todayDate.getFullYear(), todayDate.getMonth() + 1, 0);
+    const endOfMonthStr = [endOfMonth.getFullYear(), String(endOfMonth.getMonth() + 1).padStart(2, '0'), String(endOfMonth.getDate()).padStart(2, '0')].join('-');
+    const remainingDaysInMonth = Math.max(1, countWorkDays(todayStr, endOfMonthStr));
 
-    // --- Goal Strategy B: Cashflow Based (Bills) ---
-    // Ensure we have enough cash by specific dates
-    let maxRequiredDailyRateForBills = 0;
-    let billGoalExplanation = "";
+    // --- LAYER 1: EXPENSE TARGET (Meta de Contas) ---
+    // Logic: Calculate how much we need per day to cover upcoming bills based on "Steepest Hill"
+    // (i.e., ensure we have enough cash for the soonest bill, then the next, etc.)
     
-    // Simulate cashflow accumulation day by day using planned dates
+    let expenseTargetToday = 0;
+    
     if (sortedUnpaidBills.length > 0) {
-        let currentProjectedCash = Math.max(0, netProfit); // Start with current actual cash
-        // We only care about bills due in the future to influence future daily goals
-        // Past due bills increase immediate pressure (effectively due 'now')
-        
-        // This is a complex simulation, simplified here:
-        // Identify the "tightest" bill constraint.
-        // For each bill, determine (Amount - CurrentCash) / (WorkDaysUntilBill).
-        // Take the maximum of these requirements.
-        
-        for (const bill of sortedUnpaidBills) {
-            const billDate = bill.dueDate;
-            // Count work days from today until bill date (inclusive)
-            const availableWorkDays = remainingPlannedDates.filter(d => d <= billDate).length;
-            const daysToCover = availableWorkDays === 0 ? 1 : availableWorkDays; // If due today/past, need it today (1 day)
-
-            // Current net profit considers all past expenses/income.
-            // We need to cover this specific bill amount.
-            // Simplified: Treat all unpaid bills as a stack to clear.
-            // If we have cash in hand, great. If not, divide shortage by days.
-            
-            // NOTE: A robust system would order all inflows/outflows. 
-            // Here we use a conservative approach: 
-            // Total Pending Bills / Total Remaining Days is the baseline. 
-            // But if a big bill is due in 2 days, we spike the rate.
-            
-            // Let's assume cash in hand covers previous bills.
-            // New Requirement = BillAmount / DaysToCover.
-            // But we need to account for the CUMULATIVE need.
-            
-             // Revert to the accumulation logic from previous version, adapted to planned dates:
-             // We need to reach 'CumulativeBillTotal' by 'BillDate'.
-        }
-        
-        // Re-implementing the robust loop from original code, but using plannedWorkDates:
         let cumulativeBillTotal = 0;
-        const startingCash = Math.max(0, netProfit); 
+        let maxDailyRateNeeded = 0;
         
+        // We start with our current cash. We need to reach (Bill 1 Amount), then (Bill 1 + Bill 2), etc.
+        // If current cash > Bill 1, great. If not, we have a shortfall to cover in X days.
+        const startingCash = Math.max(0, netProfit); 
+
         for (const bill of sortedUnpaidBills) {
             cumulativeBillTotal += bill.amount;
-            const totalNeededForMilestone = cumulativeBillTotal - startingCash;
-            
-            if (totalNeededForMilestone > 0) {
-                 const billDueStr = bill.dueDate;
-                 const workDaysUntilBill = remainingPlannedDates.filter(d => d <= billDueStr).length || 1;
-                 const requiredRate = totalNeededForMilestone / workDaysUntilBill;
-                 
-                 if (requiredRate > maxRequiredDailyRateForBills) {
-                     maxRequiredDailyRateForBills = requiredRate;
-                     billGoalExplanation = `Foco: Quitar ${bill.description}`;
-                 }
+            const shortfall = cumulativeBillTotal - startingCash;
+
+            if (shortfall > 0) {
+                // We need to cover this shortfall by the bill's due date
+                // If due date is today or past, use 1 day (urgent!)
+                const daysUntilBill = countWorkDays(todayStr, bill.dueDate);
+                const safeDays = Math.max(1, daysUntilBill);
+                
+                const rateForThisBill = shortfall / safeDays;
+                if (rateForThisBill > maxDailyRateNeeded) {
+                    maxDailyRateNeeded = rateForThisBill;
+                }
             }
         }
+        expenseTargetToday = maxDailyRateNeeded;
     }
 
-    // --- Final Decision ---
-    // The goal is the higher of the two: meet the salary ambition OR pay the bills.
-    let finalDailyGoal = 0;
-    let goalExplanation = "";
-
-    if (dailyGoalBasedOnSalary >= maxRequiredDailyRateForBills) {
-        finalDailyGoal = dailyGoalBasedOnSalary;
-        goalExplanation = salaryGoal > 0 
-            ? `Meta para atingir salário de ${formatCurrency(salaryGoal, true)}`
-            : "Defina uma meta salarial nas configurações.";
-    } else {
-        finalDailyGoal = maxRequiredDailyRateForBills;
-        goalExplanation = `Prioridade: ${billGoalExplanation || 'Cobrir contas pendentes'}`;
+    // --- LAYER 2: SALARY TARGET (Meta de Salário) ---
+    // Logic: User wants "Gross Salary" (Total Income? Or Net Profit?)
+    // Prompt said: "Meta de salário entra por cima... somando com a meta de despesas".
+    // This implies we secure the expenses first, then we secure the salary.
+    // Effectively: Target = Expenses + (Salary - Expenses_Already_Covered)
+    
+    let salaryTargetToday = 0;
+    
+    if (monthlySalaryGoal > 0) {
+        // How much money is "Free" for salary?
+        // Free Cash = Net Profit - Total Pending Bills
+        // If Net Profit < Pending Bills, we have Negative Free Cash (Debt).
+        // The Debt is handled by expenseTargetToday.
+        // We only start calculating salary target on the SURPLUS cash or FUTURE earnings.
+        
+        // Simpler approach compatible with "Add on top":
+        // 1. We have 'expenseTargetToday' to cover the DEBT part.
+        // 2. We need to cover the SALARY part.
+        // Remaining Salary Needed = Goal - (Money available for salary)
+        // Money available for salary = Max(0, Net Profit - Pending Bills).
+        
+        const cashAvailableForSalary = Math.max(0, netProfit - pendingBillsTotal);
+        const salaryShortfall = Math.max(0, monthlySalaryGoal - cashAvailableForSalary);
+        
+        salaryTargetToday = salaryShortfall / remainingDaysInMonth;
     }
+
+    // --- TOTAL TARGET ---
+    const totalTargetToday = expenseTargetToday + salaryTargetToday;
 
     // Earnings Today
     const earningsToday = transactions.filter(t => t.type === TransactionType.INCOME && t.date === todayStr).reduce((acc, t) => acc + t.amount, 0);
+
+    // Goal Explanation Text
+    let goalExplanation = "";
+    if (expenseTargetToday > 0 && salaryTargetToday > 0) {
+        goalExplanation = "Meta combinada: Contas + Salário.";
+    } else if (expenseTargetToday > 0) {
+        goalExplanation = "Foco total em cobrir contas pendentes.";
+    } else if (salaryTargetToday > 0) {
+        goalExplanation = "Contas em dia! Trabalhando pelo salário.";
+    } else {
+        goalExplanation = "Parabéns! Metas do mês atingidas.";
+    }
+
+    // Status Determination for UI
+    // Red: Haven't covered daily expense portion
+    // Orange: Covered expenses, working on salary
+    // Green: Hit total target
+    let statusColor = "bg-emerald-600"; // Default green if 0 target
+    if (totalTargetToday > 0) {
+        if (earningsToday < expenseTargetToday) {
+            statusColor = "bg-rose-600"; // Critical: Bills at risk
+        } else if (earningsToday < totalTargetToday) {
+            statusColor = "bg-amber-500"; // Warning: Bills ok, Salary pending
+        } else {
+            statusColor = "bg-emerald-600"; // Success
+        }
+    }
 
     return { 
         totalIncome, 
         totalExpense, 
         netProfit, 
         profitMargin, 
-        dailyGoal: finalDailyGoal, 
+        
+        // Exposed Goals
+        expenseTargetToday,
+        salaryTargetToday,
+        totalTargetToday,
+        
+        statusColor,
         pendingBillsTotal, 
         earningsToday, 
         goalExplanation,
         incomeThisMonth,
-        remainingDays: countRemainingDays,
-        salaryGoal
+        remainingDays: remainingDaysInMonth,
+        salaryGoal: monthlySalaryGoal
     };
   }, [transactions, bills, plannedWorkDates, monthlySalaryGoal]);
 
@@ -714,19 +734,49 @@ function App() {
             {activeTab === 'dashboard' && (
               <div className="space-y-6 animate-in fade-in slide-in-from-bottom-4 duration-500">
                 <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-2 gap-4">
-                  <div className="bg-gradient-to-br from-indigo-600 to-blue-700 rounded-xl p-5 text-white shadow-lg relative overflow-hidden group">
+                  
+                  {/* META DIÁRIA REAL (ATUALIZADO) */}
+                  <div className={`${stats.statusColor} transition-colors duration-500 rounded-xl p-5 text-white shadow-lg relative overflow-hidden group`}>
                     <div className="absolute top-0 right-0 p-4 opacity-10 group-hover:opacity-20 transition-opacity"><Target size={80} /></div>
                     <div className="relative z-10">
                       <div className="flex justify-between items-start">
                         <div>
-                          <p className="text-indigo-100 text-sm font-medium mb-1 flex items-center gap-1"><Target size={14} /> Meta Diária (Real)</p>
-                          <h3 className="text-3xl font-bold mb-1">{formatCurrency(stats.dailyGoal)}</h3>
+                          <p className="text-white/80 text-sm font-medium mb-1 flex items-center gap-1"><Target size={14} /> Meta Diária (Real)</p>
+                          <h3 className="text-3xl font-bold mb-1">{formatCurrency(stats.totalTargetToday)}</h3>
                         </div>
                         <button onClick={() => setIsSettingsModalOpen(true)} className="p-2 bg-white/10 hover:bg-white/20 rounded-lg text-white transition-colors z-20 backdrop-blur-sm" title="Configurar Metas e Dias"><Settings size={20} /></button>
                       </div>
-                      <p className="text-xs text-indigo-200 mt-1 opacity-90 leading-tight">{stats.dailyGoal === 0 ? 'Parabéns! Seu caixa cobre suas contas e metas.' : stats.goalExplanation}</p>
+                      
+                      {/* Breakdown */}
+                      <div className="mt-3 space-y-1 bg-black/10 p-2 rounded-lg">
+                         <div className="flex justify-between text-xs font-medium">
+                            <span className="opacity-80 flex items-center gap-1"><AlertCircle size={10} /> Despesas hoje:</span>
+                            <span>{formatCurrency(stats.expenseTargetToday)}</span>
+                         </div>
+                         {stats.salaryGoal > 0 && (
+                           <div className="flex justify-between text-xs font-medium">
+                              <span className="opacity-80 flex items-center gap-1"><TrendingUp size={10} /> Salário hoje:</span>
+                              <span>{formatCurrency(stats.salaryTargetToday)}</span>
+                           </div>
+                         )}
+                         <div className="h-px bg-white/10 my-1"></div>
+                         <div className="flex justify-between text-xs font-bold">
+                            <span className="opacity-80">Faturado hoje:</span>
+                            <span>{formatCurrency(stats.earningsToday)}</span>
+                         </div>
+                      </div>
+
+                      <p className="text-xs text-white/90 mt-2 leading-tight flex items-center gap-1">
+                         {stats.earningsToday < stats.expenseTargetToday && <AlertTriangle size={12} className="text-white" />}
+                         {stats.earningsToday < stats.expenseTargetToday 
+                            ? `Faltam ${formatCurrency(stats.expenseTargetToday - stats.earningsToday)} para garantir as contas!` 
+                            : stats.earningsToday < stats.totalTargetToday 
+                                ? "Contas ok! Buscando meta de salário." 
+                                : "Excelente! Meta total batida."}
+                      </p>
                     </div>
                   </div>
+
                   <StatCard title="Lucro Líquido" value={formatCurrency(stats.netProfit)} icon={Wallet} colorClass="bg-slate-800" trend={`${stats.profitMargin.toFixed(0)}% Margem`} trendUp={stats.profitMargin > 30} />
                 </div>
                 
@@ -734,12 +784,12 @@ function App() {
                 {stats.salaryGoal > 0 && (
                    <div className="bg-white p-4 rounded-xl shadow-sm border border-slate-200 flex flex-col gap-2">
                       <div className="flex justify-between text-sm font-bold text-slate-700">
-                        <span>Progresso Mensal</span>
-                        <span>{((stats.incomeThisMonth / stats.salaryGoal) * 100).toFixed(1)}%</span>
+                        <span>Progresso Salarial (Mês)</span>
+                        <span>{Math.min(100, (stats.incomeThisMonth / stats.salaryGoal) * 100).toFixed(1)}%</span>
                       </div>
                       <div className="w-full h-3 bg-slate-100 rounded-full overflow-hidden">
                         <div 
-                          className="h-full bg-emerald-500 rounded-full transition-all duration-1000 ease-out" 
+                          className="h-full bg-indigo-600 rounded-full transition-all duration-1000 ease-out" 
                           style={{ width: `${Math.min(100, (stats.incomeThisMonth / stats.salaryGoal) * 100)}%` }} 
                         />
                       </div>
