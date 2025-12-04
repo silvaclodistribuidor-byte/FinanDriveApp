@@ -46,14 +46,24 @@ import { Login } from './components/Login';
 import { loadAppData, saveAppData, auth, logoutUser } from "./services/firestoreService";
 import { Transaction, TransactionType, ExpenseCategory, Bill, ShiftState, DEFAULT_CATEGORIES, Category } from './types';
 
-// Define local User interface and mock onAuthStateChanged to avoid TS errors
+// Local User Definition for Demo Mode
 export interface User {
   uid: string;
   email: string | null;
 }
 
+// Mock onAuthStateChanged to read from LocalStorage
 const onAuthStateChanged = (auth: any, callback: (user: User | null) => void) => {
-  // Mock implementation
+  const saved = localStorage.getItem('finandrive_demo_user');
+  if (saved) {
+    try {
+      callback(JSON.parse(saved));
+    } catch {
+      callback(null);
+    }
+  } else {
+    callback(null);
+  }
   return () => {};
 };
 
@@ -153,10 +163,7 @@ function App() {
 
   // 1. Monitor Authentication
   useEffect(() => {
-    if(!auth) {
-      setAuthLoading(false);
-      return;
-    }
+    // In mock mode, we use our local onAuthStateChanged
     const unsubscribe = onAuthStateChanged(auth, (currentUser) => {
       setUser(currentUser);
       setAuthLoading(false);
@@ -288,8 +295,6 @@ function App() {
 
   const handleEditCategory = (id: string, name: string, type: 'income' | 'expense' | 'both') => {
     setCategories(prev => prev.map(c => c.id === id ? { ...c, name, type } : c));
-    // Optionally update transactions/bills that reference this category name for consistency if you want,
-    // but we are using IDs now primarily, though the modal still saves names.
   };
 
   const handleDeleteCategory = (id: string) => {
@@ -415,18 +420,13 @@ function App() {
     };
 
     // Calculate daysRemainingForExpenses
-    // "Quantity of workdays from today until the last due date of bills still pending"
-    // If no specific pending bills, we assume until end of month to be safe or 1 if passed.
-    // Logic update: use 'unpaidBillsThisMonth' to find last due date.
     let lastExpenseDate = todayStr;
     if (unpaidBillsThisMonth.length > 0) {
       lastExpenseDate = unpaidBillsThisMonth[unpaidBillsThisMonth.length - 1].dueDate;
     } else {
-      // If all paid (or no bills), extend to end of month to dilute remaining expense target (if any math remainder exists)
       const endOfMonth = new Date(new Date().getFullYear(), new Date().getMonth() + 1, 0);
       lastExpenseDate = [endOfMonth.getFullYear(), String(endOfMonth.getMonth() + 1).padStart(2,'0'), String(endOfMonth.getDate()).padStart(2,'0')].join('-');
     }
-    // If last expense date is in the past, use today (1 day remaining effectively)
     if (lastExpenseDate < todayStr) lastExpenseDate = todayStr;
 
     const daysRemainingForExpenses = Math.max(1, countWorkDays(todayStr, lastExpenseDate));
@@ -442,15 +442,13 @@ function App() {
     // Daily Goal Formula
     let dailyGoal = 0;
     if (S > 0) {
-      // If we have a salary goal, we aim for the max between needed expense coverage and salary trajectory
       dailyGoal = Math.max(expenseTargetToday, salaryTargetToday);
     } else {
-      // Only expenses
       dailyGoal = expenseTargetToday;
     }
 
     // Daily Status Color
-    let dailyStatusColor = "bg-emerald-600"; // Default green
+    let dailyStatusColor = "bg-emerald-600";
     let dailyStatusMessage = "Parabéns! Você bateu a meta de hoje.";
 
     if (F_today < expenseTargetToday) {
@@ -492,7 +490,7 @@ function App() {
 
     const pendingBillsTotal = bills.filter(b => !b.isPaid).reduce((acc, b) => acc + b.amount, 0);
 
-    // Remaining Planned Work Days (for progress bar context)
+    // Remaining Planned Work Days
     const remainingPlannedDates = plannedWorkDates
       .filter(d => d.startsWith(currentMonthPrefix) && d >= todayStr)
       .sort();
@@ -504,21 +502,9 @@ function App() {
         netProfit, 
         profitMargin, 
         
-        // Monthly Card Vars
-        displayGoal,
-        D,
-        F,
-        S,
-        statusColor,
-        statusMessage,
+        displayGoal, D, F, S, statusColor, statusMessage,
         
-        // Daily Card Vars
-        dailyGoal,
-        expenseTargetToday,
-        salaryTargetToday,
-        F_today,
-        dailyStatusColor,
-        dailyStatusMessage,
+        dailyGoal, expenseTargetToday, salaryTargetToday, F_today, dailyStatusColor, dailyStatusMessage,
 
         pendingBillsTotal, 
         remainingDays
@@ -580,8 +566,7 @@ function App() {
     { name: 'Despesas', value: stats.totalExpense, color: '#f43f5e' }
   ], [stats]);
 
-  // --- Actions ---
-
+  // --- Handlers ---
   const handleAddTransaction = (data: any) => {
     const newTransaction: Transaction = { id: Math.random().toString(36).substr(2, 9), ...data };
     setTransactions(prev => [newTransaction, ...prev]);
@@ -599,14 +584,12 @@ function App() {
       type: TransactionType.EXPENSE,
       amount: exp.amount,
       description: `${exp.description} (Turno)`,
-      category: exp.category, // This might need mapping if we want strict category IDs, but keeping as string for now for compatibility
+      category: exp.category, 
       date: data.date
     }));
     
     const newTransactions = [incomeTransaction, ...expenseTransactions, ...transactions];
     setTransactions(newTransactions);
-    
-    // Reseta o estado do turno (inativo)
     const resetShiftState = { isActive: false, isPaused: false, startTime: null, elapsedSeconds: 0, earnings: { uber: 0, n99: 0, indrive: 0, private: 0 }, expenses: 0, expenseList: [], km: 0 };
     setShiftState(resetShiftState);
   };
@@ -625,8 +608,6 @@ function App() {
   const toggleBillPaid = (id: string) => { setBills(prev => prev.map(b => (b.id === id ? { ...b, isPaid: !b.isPaid } : b))); };
   const handleDeleteBill = (id: string) => { setBills(prev => prev.filter(b => b.id !== id)); };
   const handleDeleteTransaction = (id: string) => { setTransactions(prev => prev.filter(t => t.id !== id)); };
-
-  // --- RENDER ---
 
   if (authLoading) return <div className="min-h-screen bg-slate-900 flex items-center justify-center text-white">Carregando FinanDrive...</div>;
 
@@ -651,7 +632,6 @@ function App() {
         </div>
       )}
 
-      {/* Sidebar */}
       <aside className={`fixed inset-y-0 left-0 z-40 w-64 bg-slate-900 text-slate-300 transform transition-transform duration-300 ease-in-out md:relative md:translate-x-0 shrink-0 ${mobileMenuOpen ? 'translate-x-0' : '-translate-x-full'} ${activeTab === 'shift' ? 'md:w-20 lg:w-64' : ''}`}>
         <div className="p-6 hidden md:flex flex-col justify-center items-center border-b border-slate-800 h-24">
           <span className={`font-extrabold text-2xl tracking-tight text-white ${activeTab === 'shift' ? 'md:hidden lg:block' : ''}`}>FinanDrive</span>
@@ -724,7 +704,6 @@ function App() {
                    </div>
                  </div>
                  
-                 {/* Progress Bar (Simple) */}
                  <div className="w-full h-1.5 bg-black/20 rounded-full overflow-hidden mb-2">
                    <div className="h-full bg-white/90 rounded-full transition-all duration-1000" style={{ width: `${Math.min(100, (stats.F_today / (stats.dailyGoal || 1)) * 100)}%` }}></div>
                  </div>
@@ -748,7 +727,6 @@ function App() {
                  </p>
                </div>
             </div>
-            {/* ------------------------------- */}
 
             <div className="grid grid-cols-2 md:grid-cols-4 gap-2 mb-3 shrink-0">
               <div className="bg-slate-900/80 rounded-xl p-3 border border-slate-800 shadow-lg col-span-2 flex flex-col justify-center items-center relative group">
