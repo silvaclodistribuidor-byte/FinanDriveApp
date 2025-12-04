@@ -1,14 +1,8 @@
-
+// src/services/firestoreService.ts
 import { db, auth } from "../firebaseConfig";
-// import { doc, getDoc, setDoc } from "firebase/firestore";
-// import { signOut } from "firebase/auth";
+import { doc, getDoc, setDoc } from "firebase/firestore";
+import { signOut } from "firebase/auth";
 import { Category } from "../types";
-
-// Mock Firebase functions to prevent build errors
-const doc = (db: any, collection: string, id: string) => null;
-const getDoc = async (ref: any) => ({ exists: () => false, data: () => null });
-const setDoc = async (ref: any, data: any, options?: any) => {};
-const signOut = async (auth: any) => {};
 
 export const logoutUser = async () => {
   if (auth) {
@@ -26,16 +20,15 @@ export const loadAppData = async (userId: string) => {
   if (db) {
     try {
       const docRef = doc(db, "drivers", userId);
-      // Since we mocked getDoc to return exists=false, this block won't really execute usefully
-      // but if db is enabled properly later, imports should be restored.
-      if (docRef) {
-          const docSnap = await getDoc(docRef);
-          if (docSnap && docSnap.exists()) {
-            const data = docSnap.data();
-            // Atualiza o cache local
-            localStorage.setItem(`finandrive_data_${userId}`, JSON.stringify(data));
-            return data;
-          }
+      const docSnap = await getDoc(docRef);
+      if (docSnap.exists()) {
+        const data = docSnap.data();
+        // Atualiza o cache local
+        localStorage.setItem(
+          `finandrive_data_${userId}`,
+          JSON.stringify(data)
+        );
+        return data;
       }
     } catch (error) {
       console.error("Erro ao carregar do Firestore:", error);
@@ -52,9 +45,7 @@ export const saveAppData = async (data: any, userId: string) => {
   if (db) {
     try {
       const docRef = doc(db, "drivers", userId);
-      if (docRef) {
-        await setDoc(docRef, data, { merge: true });
-      }
+      await setDoc(docRef, data, { merge: true });
     } catch (error) {
       console.error("Erro ao salvar no Firestore:", error);
     }
@@ -64,31 +55,60 @@ export const saveAppData = async (data: any, userId: string) => {
   localStorage.setItem(`finandrive_data_${userId}`, JSON.stringify(data));
 };
 
-// --- Category CRUD Operations (Mock Implementation over existing LocalStorage structure) ---
-// Note: As categorias são salvas dentro do objeto principal em saveAppData pelo App.tsx.
-// Estas funções servem como auxiliares ou mocks se a arquitetura mudar para coleções separadas.
+// --- Category CRUD Operations ---
+// As categorias hoje estão salvas dentro do objeto principal em saveAppData/App.tsx.
+// Estas funções usam esse mesmo modelo de dados, sem criar coleções separadas.
 
 export const getCategories = async (driverId: string): Promise<Category[]> => {
   const data = await loadAppData(driverId);
   return data?.categories || [];
 };
 
-export const addCategory = async (driverId: string, data: { name: string; type?: "income" | "expense" | "both" }): Promise<Category> => {
+export const addCategory = async (
+  driverId: string,
+  data: { name: string; type?: "income" | "expense" | "both" }
+): Promise<Category> => {
+  const existing = (await getCategories(driverId)) || [];
   const newCat: Category = {
     id: `cat_${Date.now()}`,
     name: data.name,
-    type: data.type || 'both',
-    driverId
+    type: data.type || "both",
+    driverId,
   };
+  const updatedCategories = [...existing, newCat];
+
+  const appData = (await loadAppData(driverId)) || {};
+  const newData = { ...appData, categories: updatedCategories };
+  await saveAppData(newData, driverId);
+
   return newCat;
 };
 
-export const updateCategory = async (categoryId: string, data: Partial<Category>): Promise<void> => {
-  console.log(`Updating category ${categoryId}`, data);
+export const updateCategory = async (
+  driverId: string,
+  categoryId: string,
+  data: Partial<Category>
+): Promise<void> => {
+  const existing = (await getCategories(driverId)) || [];
+  const updated = existing.map((cat) =>
+    cat.id === categoryId ? { ...cat, ...data } : cat
+  );
+
+  const appData = (await loadAppData(driverId)) || {};
+  const newData = { ...appData, categories: updated };
+  await saveAppData(newData, driverId);
 };
 
-export const deleteCategory = async (categoryId: string): Promise<void> => {
-  console.log(`Deleting category ${categoryId}`);
+export const deleteCategory = async (
+  driverId: string,
+  categoryId: string
+): Promise<void> => {
+  const existing = (await getCategories(driverId)) || [];
+  const filtered = existing.filter((cat) => cat.id !== categoryId);
+
+  const appData = (await loadAppData(driverId)) || {};
+  const newData = { ...appData, categories: filtered };
+  await saveAppData(newData, driverId);
 };
 
 export { auth, db };
