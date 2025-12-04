@@ -1,31 +1,27 @@
 
-import { db, auth } from "../firebaseConfig";
+import { auth as authMock } from "../firebaseConfig";
 import { Category } from "../types";
 
+// Re-export mock auth
+export const auth = authMock;
+export const db = null;
+
 export const logoutUser = async () => {
-  if (auth) {
-    try {
-      // Mock logout
-      console.log("Logging out...");
-    } catch (error) {
-      console.error("Error signing out", error);
-    }
-  }
+  localStorage.removeItem("finandrive_demo_user");
   window.location.reload();
 };
 
 export const loadAppData = async (userId: string) => {
-  // Mock Firestore implementation - Fallback to localStorage
+  // Simulate API delay
+  await new Promise(resolve => setTimeout(resolve, 500));
+  
   const saved = localStorage.getItem(`finandrive_data_${userId}`);
   return saved ? JSON.parse(saved) : null;
 };
 
 export const saveAppData = async (data: any, userId: string) => {
-  // Mock Firestore implementation - Always save to localStorage
   localStorage.setItem(`finandrive_data_${userId}`, JSON.stringify(data));
 };
-
-// --- Category CRUD Operations ---
 
 export const getCategories = async (driverId: string): Promise<Category[]> => {
   const data = await loadAppData(driverId);
@@ -43,11 +39,11 @@ export const addCategory = async (driverId: string, data: { name: string; type?:
 };
 
 export const updateCategory = async (categoryId: string, data: Partial<Category>): Promise<void> => {
-  console.log(`Updating category ${categoryId}`, data);
+  // Mock update
+  console.log("Mock category update", categoryId, data);
 };
 
 export const deleteCategory = async (categoryId: string): Promise<void> => {
-  console.log(`Deleting category ${categoryId}`);
+  // Mock delete
+  console.log("Mock category delete", categoryId);
 };
-
-export { auth, db };
