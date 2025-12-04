@@ -1,17 +1,19 @@
+import { User as FirebaseUser } from 'firebase/auth';
+
 export enum TransactionType {
   INCOME = 'INCOME',
   EXPENSE = 'EXPENSE'
 }
 
-export type ExpenseCategory = 'Combustível' | 'Alimentação' | 'Manutenção' | 'Outros';
+export type ExpenseCategory = 'combustivel' | 'alimentacao' | 'manutencao' | 'outros';
 
 export interface Transaction {
   id: string;
   type: TransactionType;
+  category?: string;
   amount: number;
   description: string;
-  date: string; // YYYY-MM-DD
-  category?: string;
+  date: string;
   mileage?: number;
   durationHours?: number;
 }
@@ -20,9 +22,16 @@ export interface Bill {
   id: string;
   description: string;
   amount: number;
-  dueDate: string; // YYYY-MM-DD
+  dueDate: string;
   isPaid: boolean;
   category?: string;
+}
+
+export interface ShiftExpense {
+  amount: number;
+  description: string;
+  category: ExpenseCategory;
+  timestamp: number;
 }
 
 export interface ShiftState {
@@ -36,30 +45,9 @@ export interface ShiftState {
     indrive: number;
     private: number;
   };
-  /**
-   * Último saldo informado em cada app (Uber/99/InDrive/Particular),
-   * usado para calcular a diferença no modo de atualização inteligente.
-   */
-  lastUberBalance: number;
-  lastN99Balance: number;
-  lastIndriveBalance: number;
-  lastPrivateBalance: number;
   expenses: number;
-  expenseList: Array<{
-    amount: number;
-    description: string;
-    category: ExpenseCategory;
-    timestamp: number;
-  }>;
+  expenseList: ShiftExpense[];
   km: number;
 }
 
-export const DEFAULT_CATEGORIES = [
-  'Combustível',
-  'Alimentação',
-  'Manutenção',
-  'Seguro/Impostos',
-  'Limpeza',
-  'Internet/Celular',
-  'Outros'
-];
+export const DEFAULT_CATEGORIES = ['Combustível', 'Alimentação', 'Manutenção', 'Outros', 'Uber', '99', 'InDrive', 'Particular'];
