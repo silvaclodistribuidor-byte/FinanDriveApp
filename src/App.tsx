@@ -1,3 +1,4 @@
+
 import React, { useState, useMemo, useEffect, useRef } from "react";
 import { 
   LayoutDashboard, 
@@ -44,18 +45,15 @@ import { ReportsTab } from './components/ReportsTab';
 import { Login } from './components/Login';
 import { loadAppData, saveAppData, auth, logoutUser } from "./services/firestoreService";
 import { Transaction, TransactionType, ExpenseCategory, Bill, ShiftState, DEFAULT_CATEGORIES, Category } from './types';
-// Removed firebase/auth imports due to missing module in environment
 
-// Local User definition to replace Firebase User
-interface User {
+// Define local User interface and mock onAuthStateChanged to avoid TS errors
+export interface User {
   uid: string;
   email: string | null;
 }
 
-// Mock onAuthStateChanged
 const onAuthStateChanged = (auth: any, callback: (user: User | null) => void) => {
-  // If we had a real auth, we would subscribe here.
-  // For demo/error-fixing purposes, we do nothing.
+  // Mock implementation
   return () => {};
 };
 
@@ -819,7 +817,7 @@ function App() {
               <div className="space-y-6 animate-in fade-in slide-in-from-bottom-4 duration-500">
                 <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-2 gap-4">
                   
-                  {/* META MENSAL REAL (DASHBOARD) */}
+                  {/* META MENSAL REAL (NOVO) */}
                   <div className={`${stats.statusColor} transition-colors duration-500 rounded-xl p-5 text-white shadow-lg relative overflow-hidden group`}>
                     <div className="absolute top-0 right-0 p-4 opacity-10 group-hover:opacity-20 transition-opacity"><Target size={80} /></div>
                     <div className="relative z-10">
