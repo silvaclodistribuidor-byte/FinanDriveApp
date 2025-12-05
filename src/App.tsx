@@ -615,6 +615,17 @@ function App() {
     return <Login />;
   }
 
+  // Helper to determine current value for modal
+  const getCurrentEntryValue = () => {
+    if (!entryCategory) return 0;
+    switch (entryCategory) {
+      case 'uber': return shiftState.earnings.uber;
+      case '99': return shiftState.earnings.n99;
+      case 'indrive': return shiftState.earnings.indrive;
+      default: return 0;
+    }
+  };
+
   return (
     <div className="h-screen bg-slate-100 flex flex-col md:flex-row font-sans text-slate-900 overflow-hidden">
       {/* Mobile Header */}
@@ -998,7 +1009,14 @@ function App() {
       {/* Modals */}
       <TransactionModal isOpen={isTransModalOpen} onClose={() => setIsTransModalOpen(false)} onSave={handleAddTransaction} onSaveBill={handleSaveBill} categories={categories} />
       <ShiftModal isOpen={isShiftModalOpen} onClose={() => setIsShiftModalOpen(false)} onSave={handleSaveShift} initialData={shiftState.isActive || shiftState.isPaused ? { amount: currentShiftTotal, mileage: shiftState.km, durationHours: currentShiftHoursPrecise } : null} />
-      <ShiftEntryModal isOpen={entryModalOpen} onClose={() => setEntryModalOpen(false)} category={entryCategory} onSave={handleEntrySave} categories={categories} />
+      <ShiftEntryModal 
+        isOpen={entryModalOpen} 
+        onClose={() => setEntryModalOpen(false)} 
+        category={entryCategory} 
+        currentValue={getCurrentEntryValue()} 
+        onSave={handleEntrySave} 
+        categories={categories} 
+      />
       <BillModal isOpen={isBillModalOpen} onClose={() => { setIsBillModalOpen(false); setEditingBill(null); }} onSave={handleSaveBill} initialData={editingBill} categories={categories} />
       <SettingsModal 
         isOpen={isSettingsModalOpen} 
