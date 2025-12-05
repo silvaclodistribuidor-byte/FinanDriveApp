@@ -8,12 +8,12 @@ import { getAuth } from 'firebase/auth';
 // que já usava quando tudo estava funcionando.
 // Pegue em: Configurações do projeto → Seus apps → Web.
 export const firebaseConfig = {
-  apiKey: 'SUA_API_KEY',
-  authDomain: 'SEU_AUTH_DOMAIN',
-  projectId: 'SEU_PROJECT_ID',
-  storageBucket: 'SEU_STORAGE_BUCKET',
-  messagingSenderId: 'SEU_MESSAGING_SENDER_ID',
-  appId: 'SEU_APP_ID',
+  apiKey: "AIzaSyCs9k3dtWeUnpwj_mwTviGTr_K-GhtJA_A",
+  authDomain: "finandriveapp.firebaseapp.com", 
+  projectId: "finandriveapp",
+  storageBucket: "finandriveapp.firebasestorage.app",
+  messagingSenderId: "877667982188",
+  appId: "1:877667982188:web:e42cb3d73ae04e53393149"
 };
 
 export const app = initializeApp(firebaseConfig);
