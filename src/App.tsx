@@ -35,6 +35,7 @@ import {
   Check
 } from 'lucide-react';
 import { PieChart, Pie, Cell, Tooltip, ResponsiveContainer, Legend } from 'recharts';
+import { onAuthStateChanged } from 'firebase/auth';
 import { StatCard } from './components/StatCard';
 import { TransactionModal } from './components/TransactionModal';
 import { ShiftModal } from './components/ShiftModal';
@@ -46,26 +47,11 @@ import { Login } from './components/Login';
 import { loadAppData, saveAppData, auth, logoutUser } from "./services/firestoreService";
 import { Transaction, TransactionType, ExpenseCategory, Bill, ShiftState, DEFAULT_CATEGORIES, Category } from './types';
 
-// Local User Definition for Demo Mode
+// Usuário usado internamente no app (derivado do Firebase Auth)
 export interface User {
   uid: string;
   email: string | null;
 }
-
-// Mock onAuthStateChanged to read from LocalStorage
-const onAuthStateChanged = (auth: any, callback: (user: User | null) => void) => {
-  const saved = localStorage.getItem('finandrive_demo_user');
-  if (saved) {
-    try {
-      callback(JSON.parse(saved));
-    } catch {
-      callback(null);
-    }
-  } else {
-    callback(null);
-  }
-  return () => {};
-};
 
 const getTodayString = () => {
   const now = new Date();
@@ -162,15 +148,19 @@ function App() {
   const timerRef = useRef<number | null>(null);
 
   // 1. Monitor Authentication
-  useEffect(() => {
-    const unsubscribe = onAuthStateChanged(auth, (currentUser) => {
-      setUser(currentUser);
+ useEffect(() => {
+    const unsubscribe = onAuthStateChanged(auth as any, (firebaseUser) => {
+      if (firebaseUser) {
+        setUser({ uid: firebaseUser.uid, email: firebaseUser.email ?? null });
+      } else {
+        setUser(null);
+      }
       setAuthLoading(false);
     });
     return () => unsubscribe();
   }, []);
 
-  // 2. Load Data
+ // 2. Load Data
   useEffect(() => {
     if (user) {
       setIsLoadingData(true);
