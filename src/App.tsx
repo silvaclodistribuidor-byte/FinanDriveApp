@@ -162,8 +162,6 @@ function App() {
 
   // 1. Monitor Authentication
   useEffect(() => {
-    // In mock mode, we use our local onAuthStateChanged to check localStorage
-    // We do NOT check if (!auth) here because in demo mode auth is null, but we still want to log in.
     const unsubscribe = onAuthStateChanged(auth, (currentUser) => {
       setUser(currentUser);
       setAuthLoading(false);
@@ -183,7 +181,6 @@ function App() {
           if (data.bills) setBills(data.bills);
           else setBills([]);
 
-          // Migration logic: Check if categories is string[] and convert to Category[]
           if (data.categories) {
             if (data.categories.length > 0 && typeof data.categories[0] === 'string') {
                const migratedCats: Category[] = data.categories.map((c: string, i: number) => ({
@@ -281,7 +278,6 @@ function App() {
     setShiftState({ isActive: false, isPaused: false, startTime: null, elapsedSeconds: 0, earnings: { uber: 0, n99: 0, indrive: 0, private: 0 }, expenses: 0, expenseList: [], km: 0 });
   };
 
-  // Category CRUD Handlers (Updating Local State)
   const handleAddCategory = (name: string, type: 'income' | 'expense' | 'both') => {
     if (!name) return;
     const newCat: Category = {
@@ -380,10 +376,9 @@ function App() {
     
     // 1. Calculate Shift Earnings
     const currentShiftEarnings = shiftState.earnings.uber + shiftState.earnings.n99 + shiftState.earnings.indrive + shiftState.earnings.private;
-    // Only count shift earnings if active to avoid duplication when saved
     const effectiveShiftEarnings = shiftState.isActive ? currentShiftEarnings : 0;
 
-    // 2. Basic Stats (Accumulated + Current Shift)
+    // 2. Basic Stats
     const totalIncome = transactions.filter(t => t.type === TransactionType.INCOME).reduce((acc, curr) => acc + curr.amount, 0);
     const totalExpense = transactions.filter(t => t.type === TransactionType.EXPENSE).reduce((acc, curr) => acc + curr.amount, 0);
     const netProfit = totalIncome - totalExpense;
@@ -392,43 +387,45 @@ function App() {
     // 3. Monthly Vars
     const billsThisMonth = bills.filter(b => b.dueDate.startsWith(currentMonthPrefix));
     const totalMonthlyExpenses = billsThisMonth.reduce((acc, b) => acc + b.amount, 0); 
-    // D = Total Expenses of the Month
     const D = totalMonthlyExpenses;
 
-    // F = Total Income This Month (Saved Transactions)
     const savedIncomeThisMonth = transactions
       .filter(t => t.type === TransactionType.INCOME && t.date.startsWith(currentMonthPrefix))
       .reduce((acc, t) => acc + t.amount, 0);
     
-    // F = Total Income (Saved + Shift)
     const F = savedIncomeThisMonth + effectiveShiftEarnings;
-
-    // S = Monthly Salary Goal
     const S = monthlySalaryGoal || 0;
 
-    // --- Monthly Logic ---
-    const expensesPaid = Math.min(F, D);
-    const expensesRemaining = Math.max(0, D - expensesPaid);
-
-    const salaryAccumulated = Math.max(0, F - D);
-    const salaryRemaining = (S > 0) ? Math.max(0, S - salaryAccumulated) : 0;
-
-    // --- Daily Logic ---
+    // 4. Daily Logic (CORRECTED)
     const savedIncomeToday = transactions
       .filter(t => t.type === TransactionType.INCOME && t.date === todayStr)
       .reduce((acc, t) => acc + t.amount, 0);
     
-    // F_today = Saved + Shift
     const F_today = savedIncomeToday + effectiveShiftEarnings;
     
-    const unpaidBillsThisMonth = billsThisMonth.filter(b => !b.isPaid).sort((a,b) => a.dueDate.localeCompare(b.dueDate));
-    
-    // Helper to count work days between two dates inclusive
+    // To keep the daily goal STABLE during the day, we calculate what the Accumulated Income WAS
+    // at the START of today.
+    // F_start_of_day = Total Income Month (with shift) - Income Today (with shift)
+    const F_start_of_day = Math.max(0, F - F_today);
+
+    // --- Monthly Calculation for General Status ---
+    const expensesPaid = Math.min(F, D);
+    const expensesRemaining = Math.max(0, D - expensesPaid);
+    const salaryAccumulated = Math.max(0, F - D);
+    const salaryRemaining = (S > 0) ? Math.max(0, S - salaryAccumulated) : 0;
+
+    // --- Daily Target Calculation (Based on Start of Day State) ---
+    // Recalculate expenses/salary remaining as they were at 00:00 today
+    const expensesPaidStart = Math.min(F_start_of_day, D);
+    const expensesRemainingStart = Math.max(0, D - expensesPaidStart);
+    const salaryAccumulatedStart = Math.max(0, F_start_of_day - D);
+    const salaryRemainingStart = (S > 0) ? Math.max(0, S - salaryAccumulatedStart) : 0;
+
     const countWorkDays = (startStr: string, endStr: string) => {
       return plannedWorkDates.filter(d => d >= startStr && d <= endStr).length;
     };
 
-    // Calculate daysRemainingForExpenses
+    const unpaidBillsThisMonth = billsThisMonth.filter(b => !b.isPaid).sort((a,b) => a.dueDate.localeCompare(b.dueDate));
     let lastExpenseDate = todayStr;
     if (unpaidBillsThisMonth.length > 0) {
       lastExpenseDate = unpaidBillsThisMonth[unpaidBillsThisMonth.length - 1].dueDate;
@@ -439,16 +436,16 @@ function App() {
     if (lastExpenseDate < todayStr) lastExpenseDate = todayStr;
 
     const daysRemainingForExpenses = Math.max(1, countWorkDays(todayStr, lastExpenseDate));
-    const expenseTargetToday = expensesRemaining / daysRemainingForExpenses;
+    // expenseTargetToday is based on START of day needs
+    const expenseTargetToday = expensesRemainingStart / daysRemainingForExpenses;
 
-    // Calculate daysRemainingForSalary
     const endOfMonth = new Date(new Date().getFullYear(), new Date().getMonth() + 1, 0);
     const endOfMonthStr = [endOfMonth.getFullYear(), String(endOfMonth.getMonth() + 1).padStart(2,'0'), String(endOfMonth.getDate()).padStart(2,'0')].join('-');
     const daysRemainingForSalary = Math.max(1, countWorkDays(todayStr, endOfMonthStr));
 
-    const salaryTargetToday = S > 0 ? salaryRemaining / daysRemainingForSalary : 0;
+    // salaryTargetToday is based on START of day needs
+    const salaryTargetToday = S > 0 ? salaryRemainingStart / daysRemainingForSalary : 0;
 
-    // Daily Goal Formula
     let dailyGoal = 0;
     if (S > 0) {
       dailyGoal = Math.max(expenseTargetToday, salaryTargetToday);
@@ -498,28 +495,19 @@ function App() {
     }
 
     const pendingBillsTotal = bills.filter(b => !b.isPaid).reduce((acc, b) => acc + b.amount, 0);
-
-    // Remaining Planned Work Days
-    const remainingPlannedDates = plannedWorkDates
-      .filter(d => d.startsWith(currentMonthPrefix) && d >= todayStr)
-      .sort();
+    const remainingPlannedDates = plannedWorkDates.filter(d => d.startsWith(currentMonthPrefix) && d >= todayStr).sort();
     const remainingDays = remainingPlannedDates.length;
 
     return { 
-        totalIncome, 
-        totalExpense, 
-        netProfit, 
-        profitMargin, 
-        
+        totalIncome, totalExpense, netProfit, profitMargin, 
         displayGoal, D, F, S, statusColor, statusMessage,
-        
         dailyGoal, expenseTargetToday, salaryTargetToday, F_today, dailyStatusColor, dailyStatusMessage,
-
-        pendingBillsTotal, 
-        remainingDays
+        pendingBillsTotal, remainingDays
     };
-  }, [transactions, bills, plannedWorkDates, monthlySalaryGoal, shiftState]); // Added shiftState to dependency
+  }, [transactions, bills, plannedWorkDates, monthlySalaryGoal, shiftState]);
 
+  // ... (rest of useMemo hooks: billsSummary, filteredHistory, historySummary, pieData) ...
+  // Keeping them here for brevity as they didn't change logic, just standard copy
   const billsSummary = useMemo(() => ({
     paid: bills.filter(b => b.isPaid).reduce((acc, b) => acc + b.amount, 0),
     pending: bills.filter(b => !b.isPaid).reduce((acc, b) => acc + b.amount, 0)
@@ -575,7 +563,7 @@ function App() {
     { name: 'Despesas', value: stats.totalExpense, color: '#f43f5e' }
   ], [stats]);
 
-  // --- Handlers ---
+  // Handlers
   const handleAddTransaction = (data: any) => {
     const newTransaction: Transaction = { id: Math.random().toString(36).substr(2, 9), ...data };
     setTransactions(prev => [newTransaction, ...prev]);
@@ -624,7 +612,6 @@ function App() {
     return <Login />;
   }
 
-  // Helper to determine current value for modal
   const getCurrentEntryValue = () => {
     if (!entryCategory) return 0;
     switch (entryCategory) {
@@ -637,21 +624,7 @@ function App() {
 
   return (
     <div className="h-screen bg-slate-100 flex flex-col md:flex-row font-sans text-slate-900 overflow-hidden">
-      {/* Mobile Header */}
-      {activeTab !== 'shift' && (
-        <div className="md:hidden bg-slate-900 shadow-md p-4 flex justify-between items-center z-30 shrink-0">
-          <div className="flex items-center justify-center w-full relative">
-            <button onClick={() => setMobileMenuOpen(!mobileMenuOpen)} className="absolute left-0 text-slate-300">
-              {mobileMenuOpen ? <CloseIcon /> : <Menu />}
-            </button>
-            <span className="font-bold text-lg text-white tracking-tight">FinanDrive</span>
-            <button onClick={() => setShowValues(!showValues)} className="absolute right-0 text-slate-400">
-              {showValues ? <Eye size={22} /> : <EyeOff size={22} />}
-            </button>
-          </div>
-        </div>
-      )}
-
+      {/* Sidebar ... (No changes here) */}
       <aside className={`fixed inset-y-0 left-0 z-40 w-64 bg-slate-900 text-slate-300 transform transition-transform duration-300 ease-in-out md:relative md:translate-x-0 shrink-0 ${mobileMenuOpen ? 'translate-x-0' : '-translate-x-full'} ${activeTab === 'shift' ? 'md:w-20 lg:w-64' : ''}`}>
         <div className="p-6 hidden md:flex flex-col justify-center items-center border-b border-slate-800 h-24">
           <span className={`font-extrabold text-2xl tracking-tight text-white ${activeTab === 'shift' ? 'md:hidden lg:block' : ''}`}>FinanDrive</span>
@@ -686,10 +659,9 @@ function App() {
       </aside>
 
       <main className={`flex-1 overflow-y-auto h-full ${activeTab === 'shift' ? 'bg-slate-950' : 'p-4 md:p-8'}`}>
-        {/* Renderização condicional das abas */}
         {activeTab === 'shift' ? (
           <div className="h-full flex flex-col p-3 md:p-6 max-w-7xl mx-auto overflow-hidden">
-            <div className="flex justify-between items-center mb-3 shrink-0">
+            <div className="flex justify-between items-center mb-2 shrink-0">
               <div className="flex items-center gap-3">
                 <button onClick={() => setMobileMenuOpen(true)} className="md:hidden text-slate-400 p-2 bg-slate-900 rounded-lg"><Menu size={24} /></button>
                 <div>
@@ -710,7 +682,7 @@ function App() {
             </div>
 
             {/* --- NOVO CARD: META DO DIA --- */}
-            <div className={`${stats.dailyStatusColor} rounded-xl p-4 text-white shadow-lg mb-3 relative overflow-hidden transition-colors duration-500 shrink-0 group`}>
+            <div className={`${stats.dailyStatusColor} rounded-xl p-3 text-white shadow-lg mb-2 relative overflow-hidden transition-colors duration-500 shrink-0 group`}>
                <div className="absolute top-0 right-0 p-3 opacity-10 group-hover:opacity-20 transition-opacity"><Target size={64} /></div>
                <div className="relative z-10">
                  <div className="flex justify-between items-start mb-2">
@@ -728,13 +700,13 @@ function App() {
                    <div className="h-full bg-white/90 rounded-full transition-all duration-1000" style={{ width: `${Math.min(100, (stats.F_today / (stats.dailyGoal || 1)) * 100)}%` }}></div>
                  </div>
 
-                 <div className="bg-black/10 p-2 rounded-lg space-y-1">
-                    <div className="flex justify-between text-[10px] font-medium">
+                 <div className="bg-black/10 p-3 rounded-lg space-y-1.5">
+                    <div className="flex justify-between text-xs font-medium">
                        <span className="opacity-80">Mínimo p/ contas hoje:</span>
                        <span>{formatCurrency(stats.expenseTargetToday)}</span>
                     </div>
                     {stats.S > 0 && (
-                      <div className="flex justify-between text-[10px] font-medium">
+                      <div className="flex justify-between text-xs font-medium">
                          <span className="opacity-80">Parte para salário hoje:</span>
                          <span>{formatCurrency(stats.salaryTargetToday)}</span>
                       </div>
@@ -748,52 +720,55 @@ function App() {
                </div>
             </div>
 
-            <div className="grid grid-cols-2 md:grid-cols-4 gap-2 mb-3 shrink-0">
-              <div className="bg-slate-900/80 rounded-xl p-3 border border-slate-800 shadow-lg col-span-2 flex flex-col justify-center items-center relative group">
-                <div className="text-slate-500 text-[10px] font-bold uppercase tracking-wider mb-1 flex items-center gap-2"><Clock size={10} /> Tempo</div>
-                <div className="text-3xl md:text-4xl font-mono font-bold text-white tracking-tighter">
+            {/* UPDATED: Compact Grid for Time & Liquid (Side by Side on Mobile) */}
+            <div className="grid grid-cols-2 gap-2 mb-2 shrink-0">
+              <div className="bg-slate-900/80 rounded-xl p-2 border border-slate-800 shadow-lg flex flex-col justify-center items-center relative group h-20">
+                <div className="text-slate-500 text-[10px] font-bold uppercase tracking-wider mb-1 flex items-center gap-1"><Clock size={10} /> Tempo</div>
+                <div className="text-2xl font-mono font-bold text-white tracking-tighter">
                   {formatTime(shiftState.elapsedSeconds).split(' ')[0]}
-                  <span className="text-base md:text-xl text-slate-500 ml-1">{formatTime(shiftState.elapsedSeconds).split(' ').slice(1).join(' ')}</span>
+                  <span className="text-sm text-slate-500 ml-0.5">{formatTime(shiftState.elapsedSeconds).split(' ').slice(1).join(' ')}</span>
                 </div>
-                {shiftState.isActive && <button onClick={handleEditStartTime} className="absolute top-2 right-2 p-2 text-white bg-indigo-600 hover:bg-indigo-500 rounded-lg shadow-md transition-colors z-20 border border-white/20"><Edit2 size={16} /></button>}
+                {shiftState.isActive && <button onClick={handleEditStartTime} className="absolute top-1 right-1 p-1.5 text-white bg-indigo-600 hover:bg-indigo-500 rounded-lg shadow-md transition-colors z-20 border border-white/20"><Edit2 size={12} /></button>}
               </div>
-              <div className="bg-gradient-to-br from-emerald-900 to-slate-900 rounded-xl p-3 border border-emerald-800/30 shadow-lg col-span-2 flex flex-col justify-center items-center relative overflow-hidden">
-                <div className="text-emerald-400/80 text-[10px] font-bold uppercase tracking-wider mb-1 flex items-center gap-2"><Wallet size={10} /> Líquido</div>
-                <div className="text-3xl md:text-4xl font-bold text-emerald-400 tracking-tight">{formatCurrency(currentShiftLiquid)}</div>
+              <div className="bg-gradient-to-br from-emerald-900 to-slate-900 rounded-xl p-2 border border-emerald-800/30 shadow-lg flex flex-col justify-center items-center relative overflow-hidden h-20">
+                <div className="text-emerald-400/80 text-[10px] font-bold uppercase tracking-wider mb-1 flex items-center gap-1"><Wallet size={10} /> Líquido</div>
+                <div className="text-2xl font-bold text-emerald-400 tracking-tight">{formatCurrency(currentShiftLiquid)}</div>
               </div>
             </div>
 
+            {/* UPDATED: Compact Entry Cards (Reduced Height h-14, Font Adjustments) */}
             <div className="flex-1 grid grid-cols-2 md:grid-cols-3 lg:grid-cols-6 gap-2 mb-2 overflow-y-auto content-start">
-              <button onClick={() => handleOpenEntry('uber')} disabled={!shiftState.isActive || shiftState.isPaused} className="bg-black hover:bg-slate-900 border border-slate-800 rounded-xl p-3 h-20 flex flex-col justify-between transition-all active:scale-95 disabled:opacity-40"><div className="flex justify-between w-full items-start"><div className="bg-slate-800 p-1.5 rounded-lg text-white font-bold text-xs">U</div><div className="text-slate-400 text-[10px] uppercase font-bold">Uber</div></div><div className="text-white font-bold text-lg text-right">{formatCurrency(shiftState.earnings.uber)}</div></button>
-              <button onClick={() => handleOpenEntry('99')} disabled={!shiftState.isActive || shiftState.isPaused} className="bg-yellow-400 hover:bg-yellow-300 border border-yellow-500 rounded-xl p-3 h-20 flex flex-col justify-between transition-all active:scale-95 disabled:opacity-40"><div className="flex justify-between w-full items-start"><div className="bg-black/10 p-1.5 rounded-lg text-black font-bold text-xs">99</div><div className="text-black/60 text-[10px] uppercase font-bold">99Pop</div></div><div className="text-black font-bold text-lg text-right">{formatCurrency(shiftState.earnings.n99)}</div></button>
-              <button onClick={() => handleOpenEntry('indrive')} disabled={!shiftState.isActive || shiftState.isPaused} className="bg-green-600 hover:bg-green-500 border border-green-500 rounded-xl p-3 h-20 flex flex-col justify-between transition-all active:scale-95 disabled:opacity-40"><div className="flex justify-between w-full items-start"><div className="bg-white/20 p-1.5 rounded-lg text-white font-bold text-xs">In</div><div className="text-green-100 text-[10px] uppercase font-bold">InDrive</div></div><div className="text-white font-bold text-lg text-right">{formatCurrency(shiftState.earnings.indrive)}</div></button>
-              <button onClick={() => handleOpenEntry('private')} disabled={!shiftState.isActive || shiftState.isPaused} className="bg-slate-700 hover:bg-slate-600 border border-slate-600 rounded-xl p-3 h-20 flex flex-col justify-between transition-all active:scale-95 disabled:opacity-40"><div className="flex justify-between w-full items-start"><div className="bg-white/10 p-1.5 rounded-lg text-white"><Wallet size={14} /></div><div className="text-slate-300 text-[10px] uppercase font-bold">Partic.</div></div><div className="text-white font-bold text-lg text-right">{formatCurrency(shiftState.earnings.private)}</div></button>
-              <button onClick={() => handleOpenEntry('km')} disabled={!shiftState.isActive || shiftState.isPaused} className="bg-blue-600 hover:bg-blue-500 border border-blue-500 rounded-xl p-3 h-20 flex flex-col justify-between transition-all active:scale-95 disabled:opacity-40"><div className="flex justify-between w-full items-start"><div className="bg-white/20 p-1.5 rounded-lg text-white"><Gauge size={14} /></div><div className="text-blue-100 text-[10px] uppercase font-bold">KM</div></div><div className="text-white font-bold text-lg text-right">{shiftState.km.toFixed(1)}</div></button>
-              <button onClick={() => handleOpenEntry('expense')} disabled={!shiftState.isActive || shiftState.isPaused} className="bg-rose-600 hover:bg-rose-500 border border-rose-500 rounded-xl p-3 h-20 flex flex-col justify-between transition-all active:scale-95 disabled:opacity-40"><div className="flex justify-between w-full items-start"><div className="bg-white/20 p-1.5 rounded-lg text-white"><Fuel size={14} /></div><div className="text-rose-100 text-[10px] uppercase font-bold">Gasto</div></div><div className="text-white font-bold text-lg text-right">{formatCurrency(shiftState.expenses)}</div></button>
+              <button onClick={() => handleOpenEntry('uber')} disabled={!shiftState.isActive || shiftState.isPaused} className="bg-black hover:bg-slate-900 border border-slate-800 rounded-xl p-2 h-14 flex flex-col justify-between transition-all active:scale-95 disabled:opacity-40"><div className="flex justify-between w-full items-center"><div className="bg-slate-800 px-1.5 py-0.5 rounded text-white font-bold text-[9px]">U</div><div className="text-slate-400 text-[9px] uppercase font-bold">Uber</div></div><div className="text-white font-bold text-base text-right leading-tight">{formatCurrency(shiftState.earnings.uber)}</div></button>
+              <button onClick={() => handleOpenEntry('99')} disabled={!shiftState.isActive || shiftState.isPaused} className="bg-yellow-400 hover:bg-yellow-300 border border-yellow-500 rounded-xl p-2 h-14 flex flex-col justify-between transition-all active:scale-95 disabled:opacity-40"><div className="flex justify-between w-full items-center"><div className="bg-black/10 px-1.5 py-0.5 rounded text-black font-bold text-[9px]">99</div><div className="text-black/60 text-[9px] uppercase font-bold">99Pop</div></div><div className="text-black font-bold text-base text-right leading-tight">{formatCurrency(shiftState.earnings.n99)}</div></button>
+              <button onClick={() => handleOpenEntry('indrive')} disabled={!shiftState.isActive || shiftState.isPaused} className="bg-green-600 hover:bg-green-500 border border-green-500 rounded-xl p-2 h-14 flex flex-col justify-between transition-all active:scale-95 disabled:opacity-40"><div className="flex justify-between w-full items-center"><div className="bg-white/20 px-1.5 py-0.5 rounded text-white font-bold text-[9px]">In</div><div className="text-green-100 text-[9px] uppercase font-bold">InDrive</div></div><div className="text-white font-bold text-base text-right leading-tight">{formatCurrency(shiftState.earnings.indrive)}</div></button>
+              <button onClick={() => handleOpenEntry('private')} disabled={!shiftState.isActive || shiftState.isPaused} className="bg-slate-700 hover:bg-slate-600 border border-slate-600 rounded-xl p-2 h-14 flex flex-col justify-between transition-all active:scale-95 disabled:opacity-40"><div className="flex justify-between w-full items-center"><div className="bg-white/10 p-1 rounded text-white"><Wallet size={10} /></div><div className="text-slate-300 text-[9px] uppercase font-bold">Partic.</div></div><div className="text-white font-bold text-base text-right leading-tight">{formatCurrency(shiftState.earnings.private)}</div></button>
+              <button onClick={() => handleOpenEntry('km')} disabled={!shiftState.isActive || shiftState.isPaused} className="bg-blue-600 hover:bg-blue-500 border border-blue-500 rounded-xl p-2 h-14 flex flex-col justify-between transition-all active:scale-95 disabled:opacity-40"><div className="flex justify-between w-full items-center"><div className="bg-white/20 p-1 rounded text-white"><Gauge size={10} /></div><div className="text-blue-100 text-[9px] uppercase font-bold">KM</div></div><div className="text-white font-bold text-base text-right leading-tight">{shiftState.km.toFixed(1)}</div></button>
+              <button onClick={() => handleOpenEntry('expense')} disabled={!shiftState.isActive || shiftState.isPaused} className="bg-rose-600 hover:bg-rose-500 border border-rose-500 rounded-xl p-2 h-14 flex flex-col justify-between transition-all active:scale-95 disabled:opacity-40"><div className="flex justify-between w-full items-center"><div className="bg-white/20 p-1 rounded text-white"><Fuel size={10} /></div><div className="text-rose-100 text-[9px] uppercase font-bold">Gasto</div></div><div className="text-white font-bold text-base text-right leading-tight">{formatCurrency(shiftState.expenses)}</div></button>
             </div>
 
-            <div className="grid grid-cols-3 gap-2 mb-3 shrink-0">
-              <div className="bg-slate-900/50 rounded-lg p-4 border border-slate-800 flex flex-col items-center justify-center"><div className="text-slate-400 text-xs font-medium uppercase tracking-wide mb-1">R$ / Hora</div><div className="text-xl md:text-2xl font-bold text-white">{formatCurrency(currentShiftRph)}</div></div>
-              <div className="bg-slate-900/50 rounded-lg p-4 border border-slate-800 flex flex-col items-center justify-center"><div className="text-slate-400 text-xs font-medium uppercase tracking-wide mb-1">R$ / KM</div><div className="text-xl md:text-2xl font-bold text-white">{formatCurrency(currentShiftRpk)}</div></div>
-              <div className="bg-slate-900/50 rounded-lg p-4 border border-slate-800 flex flex-col items-center justify-center"><div className="text-slate-400 text-xs font-medium uppercase tracking-wide mb-1">Bruto</div><div className="text-xl md:text-2xl font-bold text-blue-300">{formatCurrency(currentShiftTotal)}</div></div>
+            <div className="grid grid-cols-3 gap-2 mb-2 shrink-0">
+              <div className="bg-slate-900/50 rounded-lg p-2 border border-slate-800 flex flex-col items-center justify-center"><div className="text-slate-400 text-[10px] font-medium uppercase tracking-wide mb-0.5">R$ / Hora</div><div className="text-lg font-bold text-white">{formatCurrency(currentShiftRph)}</div></div>
+              <div className="bg-slate-900/50 rounded-lg p-2 border border-slate-800 flex flex-col items-center justify-center"><div className="text-slate-400 text-[10px] font-medium uppercase tracking-wide mb-0.5">R$ / KM</div><div className="text-lg font-bold text-white">{formatCurrency(currentShiftRpk)}</div></div>
+              <div className="bg-slate-900/50 rounded-lg p-2 border border-slate-800 flex flex-col items-center justify-center"><div className="text-slate-400 text-[10px] font-medium uppercase tracking-wide mb-0.5">Bruto</div><div className="text-lg font-bold text-blue-300">{formatCurrency(currentShiftTotal)}</div></div>
             </div>
 
-            <div className="grid grid-cols-1 md:grid-cols-2 gap-3 shrink-0 mt-auto pb-4">
+            {/* UPDATED: Compact Footer Buttons (Side by Side) */}
+            <div className="grid grid-cols-2 gap-3 shrink-0 mt-auto pb-2">
               {!shiftState.isActive ? (
-                <button onClick={handleStartShift} className="col-span-2 bg-indigo-600 hover:bg-indigo-500 text-white h-16 rounded-xl font-bold text-xl shadow-lg shadow-indigo-900/50 flex items-center justify-center gap-3 transition-all active:scale-[0.98] border border-indigo-500"><Play size={24} fill="currentColor" />INICIAR TURNO</button>
+                <button onClick={handleStartShift} className="col-span-2 bg-indigo-600 hover:bg-indigo-500 text-white h-14 rounded-xl font-bold text-lg shadow-lg shadow-indigo-900/50 flex items-center justify-center gap-3 transition-all active:scale-[0.98] border border-indigo-500"><Play size={20} fill="currentColor" />INICIAR TURNO</button>
               ) : (
                 <>
-                  <button onClick={handlePauseShift} className={`${shiftState.isPaused ? 'bg-emerald-600 hover:bg-emerald-500 border-emerald-500' : 'bg-slate-800 hover:bg-slate-700 border-slate-700'} text-white h-14 rounded-xl font-bold text-lg flex items-center justify-center gap-2 transition-all active:scale-[0.98] border shadow-lg`}>
-                    {shiftState.isPaused ? <Play size={20} fill="currentColor" /> : <Pause size={20} fill="currentColor" />}
+                  <button onClick={handlePauseShift} className={`${shiftState.isPaused ? 'bg-emerald-600 hover:bg-emerald-500 border-emerald-500' : 'bg-slate-800 hover:bg-slate-700 border-slate-700'} text-white h-12 rounded-xl font-bold text-sm flex items-center justify-center gap-2 transition-all active:scale-[0.98] border shadow-lg`}>
+                    {shiftState.isPaused ? <Play size={18} fill="currentColor" /> : <Pause size={18} fill="currentColor" />}
                     {shiftState.isPaused ? 'RETOMAR' : 'PAUSAR'}
                   </button>
-                  <button onClick={handleStopShift} className="bg-rose-900/80 hover:bg-rose-900 text-rose-200 border border-rose-800 h-14 rounded-xl font-bold text-lg shadow-lg flex items-center justify-center gap-2 transition-all active:scale-[0.98]"><StopCircle size={20} /> ENCERRAR</button>
+                  <button onClick={handleStopShift} className="bg-rose-900/80 hover:bg-rose-900 text-rose-200 border border-rose-800 h-12 rounded-xl font-bold text-sm shadow-lg flex items-center justify-center gap-2 transition-all active:scale-[0.98]"><StopCircle size={18} /> ENCERRAR</button>
                 </>
               )}
             </div>
           </div>
         ) : (
-          /* Dashboard, Reports, Bills, History */
+          /* Dashboard Content */
           <>
             <div className="flex flex-col md:flex-row justify-between items-start md:items-center mb-8 gap-4">
               <div className="flex items-center gap-4">
