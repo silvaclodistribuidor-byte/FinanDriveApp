@@ -31,7 +31,8 @@ import {
   CalendarCheck,
   AlertTriangle,
   TrendingUp,
-  Tags
+  Tags,
+  Check
 } from 'lucide-react';
 import { PieChart, Pie, Cell, Tooltip, ResponsiveContainer, Legend } from 'recharts';
 import { StatCard } from './components/StatCard';
@@ -369,22 +370,21 @@ function App() {
     return new Intl.NumberFormat('pt-BR', { style: 'currency', currency: 'BRL' }).format(val);
   };
 
-  // --- SMART CALCULATIONS (MONTHLY & DAILY) ---
+  // --- SMART CALCULATIONS ---
   const stats = useMemo(() => {
     const todayStr = getTodayString();
     const currentMonthPrefix = todayStr.substring(0, 7); // YYYY-MM
     
-    // 1. Calculate Shift Earnings
+    // Shift & Basic Income
     const currentShiftEarnings = shiftState.earnings.uber + shiftState.earnings.n99 + shiftState.earnings.indrive + shiftState.earnings.private;
     const effectiveShiftEarnings = shiftState.isActive ? currentShiftEarnings : 0;
 
-    // 2. Basic Stats
     const totalIncome = transactions.filter(t => t.type === TransactionType.INCOME).reduce((acc, curr) => acc + curr.amount, 0);
     const totalExpense = transactions.filter(t => t.type === TransactionType.EXPENSE).reduce((acc, curr) => acc + curr.amount, 0);
     const netProfit = totalIncome - totalExpense;
     const profitMargin = totalIncome > 0 ? (netProfit / totalIncome) * 100 : 0;
     
-    // 3. Monthly Vars
+    // Monthly Vars
     const billsThisMonth = bills.filter(b => b.dueDate.startsWith(currentMonthPrefix));
     const totalMonthlyExpenses = billsThisMonth.reduce((acc, b) => acc + b.amount, 0); 
     const D = totalMonthlyExpenses;
@@ -396,26 +396,23 @@ function App() {
     const F = savedIncomeThisMonth + effectiveShiftEarnings;
     const S = monthlySalaryGoal || 0;
 
-    // 4. Daily Logic (CORRECTED)
+    // Daily Logic (STABLE GOAL)
     const savedIncomeToday = transactions
       .filter(t => t.type === TransactionType.INCOME && t.date === todayStr)
       .reduce((acc, t) => acc + t.amount, 0);
     
     const F_today = savedIncomeToday + effectiveShiftEarnings;
     
-    // To keep the daily goal STABLE during the day, we calculate what the Accumulated Income WAS
-    // at the START of today.
-    // F_start_of_day = Total Income Month (with shift) - Income Today (with shift)
+    // Calculate Goal based on START OF DAY state
     const F_start_of_day = Math.max(0, F - F_today);
 
-    // --- Monthly Calculation for General Status ---
+    // Monthly Status Calc
     const expensesPaid = Math.min(F, D);
     const expensesRemaining = Math.max(0, D - expensesPaid);
     const salaryAccumulated = Math.max(0, F - D);
     const salaryRemaining = (S > 0) ? Math.max(0, S - salaryAccumulated) : 0;
 
-    // --- Daily Target Calculation (Based on Start of Day State) ---
-    // Recalculate expenses/salary remaining as they were at 00:00 today
+    // Daily Target Calc (Based on Start of Day)
     const expensesPaidStart = Math.min(F_start_of_day, D);
     const expensesRemainingStart = Math.max(0, D - expensesPaidStart);
     const salaryAccumulatedStart = Math.max(0, F_start_of_day - D);
@@ -436,14 +433,12 @@ function App() {
     if (lastExpenseDate < todayStr) lastExpenseDate = todayStr;
 
     const daysRemainingForExpenses = Math.max(1, countWorkDays(todayStr, lastExpenseDate));
-    // expenseTargetToday is based on START of day needs
     const expenseTargetToday = expensesRemainingStart / daysRemainingForExpenses;
 
     const endOfMonth = new Date(new Date().getFullYear(), new Date().getMonth() + 1, 0);
     const endOfMonthStr = [endOfMonth.getFullYear(), String(endOfMonth.getMonth() + 1).padStart(2,'0'), String(endOfMonth.getDate()).padStart(2,'0')].join('-');
     const daysRemainingForSalary = Math.max(1, countWorkDays(todayStr, endOfMonthStr));
 
-    // salaryTargetToday is based on START of day needs
     const salaryTargetToday = S > 0 ? salaryRemainingStart / daysRemainingForSalary : 0;
 
     let dailyGoal = 0;
@@ -453,20 +448,31 @@ function App() {
       dailyGoal = expenseTargetToday;
     }
 
-    // Daily Status Color
+    // NEW LOGIC: Remaining to Goal
+    let remainingForToday = Math.max(0, dailyGoal - F_today);
+    let isGoalMet = F_today >= dailyGoal;
+    
+    // Status Color
     let dailyStatusColor = "bg-emerald-600";
     let dailyStatusMessage = "Parabéns! Você bateu a meta de hoje.";
 
-    if (F_today < expenseTargetToday) {
-      dailyStatusColor = "bg-rose-600";
-      dailyStatusMessage = "Você ainda não cobriu a parte de hoje destinada às despesas.";
-    } else if (F_today < dailyGoal) {
-      dailyStatusColor = "bg-amber-500";
-      const missing = dailyGoal - F_today;
-      dailyStatusMessage = `Despesas de hoje cobertas. Falta ${formatCurrency(missing, true)} para bater sua meta do dia.`;
+    if (!isGoalMet) {
+      if (F_today < expenseTargetToday) {
+        dailyStatusColor = "bg-rose-600";
+        dailyStatusMessage = "Atenção: Mínimo para contas ainda não atingido.";
+      } else {
+        dailyStatusColor = "bg-amber-500";
+        dailyStatusMessage = "Contas garantidas! Buscando a meta de salário.";
+      }
+    } else {
+        dailyStatusColor = "bg-emerald-600";
+        const surplus = F_today - dailyGoal;
+        dailyStatusMessage = surplus > 0 
+          ? `Excelente! R$ ${formatCurrency(surplus, true)} acima da meta.` 
+          : "Meta exata atingida!";
     }
 
-    // --- Monthly Status Colors ---
+    // Monthly Status
     let statusColor = "bg-emerald-600";
     let statusMessage = "Parabéns! Meta mensal atingida.";
     let displayGoal = 0;
@@ -479,18 +485,12 @@ function App() {
         } else if (F < S) {
             statusColor = "bg-amber-500";
             statusMessage = `Contas cobertas. Faltam ${formatCurrency(salaryRemaining, true)} para o salário.`;
-        } else {
-            statusColor = "bg-emerald-600";
-            statusMessage = "Parabéns! Você atingiu sua meta salarial neste mês.";
         }
     } else {
         displayGoal = D;
         if (F < D) {
             statusColor = "bg-rose-600";
             statusMessage = `Faltam ${formatCurrency(expensesRemaining, true)} para cobrir as despesas!`;
-        } else {
-            statusColor = "bg-emerald-600";
-            statusMessage = "Contas do mês garantidas!";
         }
     }
 
@@ -502,12 +502,12 @@ function App() {
         totalIncome, totalExpense, netProfit, profitMargin, 
         displayGoal, D, F, S, statusColor, statusMessage,
         dailyGoal, expenseTargetToday, salaryTargetToday, F_today, dailyStatusColor, dailyStatusMessage,
+        remainingForToday, isGoalMet,
         pendingBillsTotal, remainingDays
     };
   }, [transactions, bills, plannedWorkDates, monthlySalaryGoal, shiftState]);
 
-  // ... (rest of useMemo hooks: billsSummary, filteredHistory, historySummary, pieData) ...
-  // Keeping them here for brevity as they didn't change logic, just standard copy
+  // ... (Other useMemos: billsSummary, filteredHistory, historySummary, pieData - Unchanged)
   const billsSummary = useMemo(() => ({
     paid: bills.filter(b => b.isPaid).reduce((acc, b) => acc + b.amount, 0),
     pending: bills.filter(b => !b.isPaid).reduce((acc, b) => acc + b.amount, 0)
@@ -624,7 +624,22 @@ function App() {
 
   return (
     <div className="h-screen bg-slate-100 flex flex-col md:flex-row font-sans text-slate-900 overflow-hidden">
-      {/* Sidebar ... (No changes here) */}
+      {/* Mobile Header */}
+      {activeTab !== 'shift' && (
+        <div className="md:hidden bg-slate-900 shadow-md p-4 flex justify-between items-center z-30 shrink-0">
+          <div className="flex items-center justify-center w-full relative">
+            <button onClick={() => setMobileMenuOpen(!mobileMenuOpen)} className="absolute left-0 text-slate-300">
+              {mobileMenuOpen ? <CloseIcon /> : <Menu />}
+            </button>
+            <span className="font-bold text-lg text-white tracking-tight">FinanDrive</span>
+            <button onClick={() => setShowValues(!showValues)} className="absolute right-0 text-slate-400">
+              {showValues ? <Eye size={22} /> : <EyeOff size={22} />}
+            </button>
+          </div>
+        </div>
+      )}
+
+      {/* Sidebar */}
       <aside className={`fixed inset-y-0 left-0 z-40 w-64 bg-slate-900 text-slate-300 transform transition-transform duration-300 ease-in-out md:relative md:translate-x-0 shrink-0 ${mobileMenuOpen ? 'translate-x-0' : '-translate-x-full'} ${activeTab === 'shift' ? 'md:w-20 lg:w-64' : ''}`}>
         <div className="p-6 hidden md:flex flex-col justify-center items-center border-b border-slate-800 h-24">
           <span className={`font-extrabold text-2xl tracking-tight text-white ${activeTab === 'shift' ? 'md:hidden lg:block' : ''}`}>FinanDrive</span>
@@ -658,9 +673,10 @@ function App() {
         </nav>
       </aside>
 
-      <main className={`flex-1 overflow-y-auto h-full ${activeTab === 'shift' ? 'bg-slate-950' : 'p-4 md:p-8'}`}>
+      <main className={`flex-1 overflow-y-auto h-full ${activeTab === 'shift' ? 'bg-slate-950' : 'p-4 md:p-8'} relative`}>
         {activeTab === 'shift' ? (
-          <div className="h-full flex flex-col p-3 md:p-6 max-w-7xl mx-auto overflow-hidden">
+          <div className="min-h-full flex flex-col p-3 md:p-6 max-w-7xl mx-auto">
+            {/* Header Area */}
             <div className="flex justify-between items-center mb-2 shrink-0">
               <div className="flex items-center gap-3">
                 <button onClick={() => setMobileMenuOpen(true)} className="md:hidden text-slate-400 p-2 bg-slate-900 rounded-lg"><Menu size={24} /></button>
@@ -681,90 +697,99 @@ function App() {
               </div>
             </div>
 
-            {/* --- NOVO CARD: META DO DIA --- */}
+            {/* --- REVISED CARD: META DO DIA (FALTA R$ XXX) --- */}
             <div className={`${stats.dailyStatusColor} rounded-xl p-3 text-white shadow-lg mb-2 relative overflow-hidden transition-colors duration-500 shrink-0 group`}>
                <div className="absolute top-0 right-0 p-3 opacity-10 group-hover:opacity-20 transition-opacity"><Target size={64} /></div>
                <div className="relative z-10">
-                 <div className="flex justify-between items-start mb-2">
-                   <div>
-                     <p className="text-white/80 text-[10px] font-bold uppercase tracking-wider mb-0.5 flex items-center gap-1"><Target size={10} /> Meta do Dia</p>
-                     <h3 className="text-2xl font-bold">{formatCurrency(stats.dailyGoal)}</h3>
-                   </div>
-                   <div className="text-right">
-                     <p className="text-white/80 text-[10px] font-bold uppercase tracking-wider mb-0.5">Faturado</p>
-                     <h3 className="text-xl font-bold">{formatCurrency(stats.F_today)}</h3>
-                   </div>
+                 {/* Top Row: References */}
+                 <div className="flex justify-between text-[10px] opacity-80 font-bold uppercase tracking-wider mb-1">
+                    <span>Meta Total: {formatCurrency(stats.dailyGoal)}</span>
+                    <span>Faturado: {formatCurrency(stats.F_today)}</span>
+                 </div>
+
+                 {/* Center Hero: FALTA / RESTANTE */}
+                 <div className="text-center py-2">
+                    <p className="text-xs font-medium opacity-90 mb-0.5">
+                        {stats.isGoalMet ? 'Meta batida! Excedente:' : 'Falta para a meta:'}
+                    </p>
+                    <h3 className="text-4xl font-extrabold tracking-tight">
+                        {stats.isGoalMet 
+                            ? `+ ${formatCurrency(stats.F_today - stats.dailyGoal, true)}` 
+                            : formatCurrency(stats.remainingForToday, true)
+                        }
+                    </h3>
                  </div>
                  
-                 <div className="w-full h-1.5 bg-black/20 rounded-full overflow-hidden mb-2">
+                 <div className="w-full h-1.5 bg-black/20 rounded-full overflow-hidden mb-2 mt-1">
                    <div className="h-full bg-white/90 rounded-full transition-all duration-1000" style={{ width: `${Math.min(100, (stats.F_today / (stats.dailyGoal || 1)) * 100)}%` }}></div>
                  </div>
 
-                 <div className="bg-black/10 p-3 rounded-lg space-y-1.5">
-                    <div className="flex justify-between text-xs font-medium">
-                       <span className="opacity-80">Mínimo p/ contas hoje:</span>
+                 <div className="bg-black/10 p-2 rounded-lg space-y-1">
+                    <div className="flex justify-between text-[10px] font-medium">
+                       <span className="opacity-80">Mínimo p/ contas:</span>
                        <span>{formatCurrency(stats.expenseTargetToday)}</span>
                     </div>
                     {stats.S > 0 && (
-                      <div className="flex justify-between text-xs font-medium">
-                         <span className="opacity-80">Parte para salário hoje:</span>
+                      <div className="flex justify-between text-[10px] font-medium">
+                         <span className="opacity-80">Salário alvo:</span>
                          <span>{formatCurrency(stats.salaryTargetToday)}</span>
                       </div>
                     )}
                  </div>
                  
-                 <p className="text-[10px] text-white/90 mt-2 font-medium flex items-center gap-1">
+                 <p className="text-[10px] text-white/90 mt-2 font-medium flex items-center gap-1 justify-center">
                    {stats.F_today < stats.expenseTargetToday && <AlertTriangle size={10} />}
                    {stats.dailyStatusMessage}
                  </p>
                </div>
             </div>
 
-            {/* UPDATED: Compact Grid for Time & Liquid (Side by Side on Mobile) */}
+            {/* COMPACT Grid for Time & Liquid (h-16) */}
             <div className="grid grid-cols-2 gap-2 mb-2 shrink-0">
-              <div className="bg-slate-900/80 rounded-xl p-2 border border-slate-800 shadow-lg flex flex-col justify-center items-center relative group h-20">
-                <div className="text-slate-500 text-[10px] font-bold uppercase tracking-wider mb-1 flex items-center gap-1"><Clock size={10} /> Tempo</div>
-                <div className="text-2xl font-mono font-bold text-white tracking-tighter">
+              <div className="bg-slate-900/80 rounded-xl p-1 border border-slate-800 shadow-lg flex flex-col justify-center items-center relative group h-16">
+                <div className="text-slate-500 text-[9px] font-bold uppercase tracking-wider mb-0.5 flex items-center gap-1"><Clock size={9} /> Tempo</div>
+                <div className="text-xl font-mono font-bold text-white tracking-tighter">
                   {formatTime(shiftState.elapsedSeconds).split(' ')[0]}
-                  <span className="text-sm text-slate-500 ml-0.5">{formatTime(shiftState.elapsedSeconds).split(' ').slice(1).join(' ')}</span>
+                  <span className="text-xs text-slate-500 ml-0.5">{formatTime(shiftState.elapsedSeconds).split(' ').slice(1).join(' ')}</span>
                 </div>
-                {shiftState.isActive && <button onClick={handleEditStartTime} className="absolute top-1 right-1 p-1.5 text-white bg-indigo-600 hover:bg-indigo-500 rounded-lg shadow-md transition-colors z-20 border border-white/20"><Edit2 size={12} /></button>}
+                {shiftState.isActive && <button onClick={handleEditStartTime} className="absolute top-1 right-1 p-1 text-white bg-indigo-600 hover:bg-indigo-500 rounded-lg shadow-md transition-colors z-20 border border-white/20"><Edit2 size={10} /></button>}
               </div>
-              <div className="bg-gradient-to-br from-emerald-900 to-slate-900 rounded-xl p-2 border border-emerald-800/30 shadow-lg flex flex-col justify-center items-center relative overflow-hidden h-20">
-                <div className="text-emerald-400/80 text-[10px] font-bold uppercase tracking-wider mb-1 flex items-center gap-1"><Wallet size={10} /> Líquido</div>
-                <div className="text-2xl font-bold text-emerald-400 tracking-tight">{formatCurrency(currentShiftLiquid)}</div>
+              <div className="bg-gradient-to-br from-emerald-900 to-slate-900 rounded-xl p-1 border border-emerald-800/30 shadow-lg flex flex-col justify-center items-center relative overflow-hidden h-16">
+                <div className="text-emerald-400/80 text-[9px] font-bold uppercase tracking-wider mb-0.5 flex items-center gap-1"><Wallet size={9} /> Líquido</div>
+                <div className="text-xl font-bold text-emerald-400 tracking-tight">{formatCurrency(currentShiftLiquid)}</div>
               </div>
             </div>
 
-            {/* UPDATED: Compact Entry Cards (Reduced Height h-14, Font Adjustments) */}
-            <div className="flex-1 grid grid-cols-2 md:grid-cols-3 lg:grid-cols-6 gap-2 mb-2 overflow-y-auto content-start">
-              <button onClick={() => handleOpenEntry('uber')} disabled={!shiftState.isActive || shiftState.isPaused} className="bg-black hover:bg-slate-900 border border-slate-800 rounded-xl p-2 h-14 flex flex-col justify-between transition-all active:scale-95 disabled:opacity-40"><div className="flex justify-between w-full items-center"><div className="bg-slate-800 px-1.5 py-0.5 rounded text-white font-bold text-[9px]">U</div><div className="text-slate-400 text-[9px] uppercase font-bold">Uber</div></div><div className="text-white font-bold text-base text-right leading-tight">{formatCurrency(shiftState.earnings.uber)}</div></button>
-              <button onClick={() => handleOpenEntry('99')} disabled={!shiftState.isActive || shiftState.isPaused} className="bg-yellow-400 hover:bg-yellow-300 border border-yellow-500 rounded-xl p-2 h-14 flex flex-col justify-between transition-all active:scale-95 disabled:opacity-40"><div className="flex justify-between w-full items-center"><div className="bg-black/10 px-1.5 py-0.5 rounded text-black font-bold text-[9px]">99</div><div className="text-black/60 text-[9px] uppercase font-bold">99Pop</div></div><div className="text-black font-bold text-base text-right leading-tight">{formatCurrency(shiftState.earnings.n99)}</div></button>
-              <button onClick={() => handleOpenEntry('indrive')} disabled={!shiftState.isActive || shiftState.isPaused} className="bg-green-600 hover:bg-green-500 border border-green-500 rounded-xl p-2 h-14 flex flex-col justify-between transition-all active:scale-95 disabled:opacity-40"><div className="flex justify-between w-full items-center"><div className="bg-white/20 px-1.5 py-0.5 rounded text-white font-bold text-[9px]">In</div><div className="text-green-100 text-[9px] uppercase font-bold">InDrive</div></div><div className="text-white font-bold text-base text-right leading-tight">{formatCurrency(shiftState.earnings.indrive)}</div></button>
-              <button onClick={() => handleOpenEntry('private')} disabled={!shiftState.isActive || shiftState.isPaused} className="bg-slate-700 hover:bg-slate-600 border border-slate-600 rounded-xl p-2 h-14 flex flex-col justify-between transition-all active:scale-95 disabled:opacity-40"><div className="flex justify-between w-full items-center"><div className="bg-white/10 p-1 rounded text-white"><Wallet size={10} /></div><div className="text-slate-300 text-[9px] uppercase font-bold">Partic.</div></div><div className="text-white font-bold text-base text-right leading-tight">{formatCurrency(shiftState.earnings.private)}</div></button>
-              <button onClick={() => handleOpenEntry('km')} disabled={!shiftState.isActive || shiftState.isPaused} className="bg-blue-600 hover:bg-blue-500 border border-blue-500 rounded-xl p-2 h-14 flex flex-col justify-between transition-all active:scale-95 disabled:opacity-40"><div className="flex justify-between w-full items-center"><div className="bg-white/20 p-1 rounded text-white"><Gauge size={10} /></div><div className="text-blue-100 text-[9px] uppercase font-bold">KM</div></div><div className="text-white font-bold text-base text-right leading-tight">{shiftState.km.toFixed(1)}</div></button>
-              <button onClick={() => handleOpenEntry('expense')} disabled={!shiftState.isActive || shiftState.isPaused} className="bg-rose-600 hover:bg-rose-500 border border-rose-500 rounded-xl p-2 h-14 flex flex-col justify-between transition-all active:scale-95 disabled:opacity-40"><div className="flex justify-between w-full items-center"><div className="bg-white/20 p-1 rounded text-white"><Fuel size={10} /></div><div className="text-rose-100 text-[9px] uppercase font-bold">Gasto</div></div><div className="text-white font-bold text-base text-right leading-tight">{formatCurrency(shiftState.expenses)}</div></button>
+            {/* COMPACT Entry Cards (h-12) */}
+            <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-6 gap-2 mb-2 overflow-y-auto content-start pb-20">
+              <button onClick={() => handleOpenEntry('uber')} disabled={!shiftState.isActive || shiftState.isPaused} className="bg-black hover:bg-slate-900 border border-slate-800 rounded-xl px-2 h-12 flex items-center justify-between transition-all active:scale-95 disabled:opacity-40"><div className="flex items-center gap-1"><div className="bg-slate-800 px-1.5 py-0.5 rounded text-white font-bold text-[9px]">U</div><div className="text-slate-400 text-[9px] uppercase font-bold">Uber</div></div><div className="text-white font-bold text-sm">{formatCurrency(shiftState.earnings.uber)}</div></button>
+              <button onClick={() => handleOpenEntry('99')} disabled={!shiftState.isActive || shiftState.isPaused} className="bg-yellow-400 hover:bg-yellow-300 border border-yellow-500 rounded-xl px-2 h-12 flex items-center justify-between transition-all active:scale-95 disabled:opacity-40"><div className="flex items-center gap-1"><div className="bg-black/10 px-1.5 py-0.5 rounded text-black font-bold text-[9px]">99</div><div className="text-black/60 text-[9px] uppercase font-bold">99</div></div><div className="text-black font-bold text-sm">{formatCurrency(shiftState.earnings.n99)}</div></button>
+              <button onClick={() => handleOpenEntry('indrive')} disabled={!shiftState.isActive || shiftState.isPaused} className="bg-green-600 hover:bg-green-500 border border-green-500 rounded-xl px-2 h-12 flex items-center justify-between transition-all active:scale-95 disabled:opacity-40"><div className="flex items-center gap-1"><div className="bg-white/20 px-1.5 py-0.5 rounded text-white font-bold text-[9px]">In</div><div className="text-green-100 text-[9px] uppercase font-bold">InDr</div></div><div className="text-white font-bold text-sm">{formatCurrency(shiftState.earnings.indrive)}</div></button>
+              <button onClick={() => handleOpenEntry('private')} disabled={!shiftState.isActive || shiftState.isPaused} className="bg-slate-700 hover:bg-slate-600 border border-slate-600 rounded-xl px-2 h-12 flex items-center justify-between transition-all active:scale-95 disabled:opacity-40"><div className="flex items-center gap-1"><div className="bg-white/10 p-1 rounded text-white"><Wallet size={10} /></div><div className="text-slate-300 text-[9px] uppercase font-bold">Part.</div></div><div className="text-white font-bold text-sm">{formatCurrency(shiftState.earnings.private)}</div></button>
+              <button onClick={() => handleOpenEntry('km')} disabled={!shiftState.isActive || shiftState.isPaused} className="bg-blue-600 hover:bg-blue-500 border border-blue-500 rounded-xl px-2 h-12 flex items-center justify-between transition-all active:scale-95 disabled:opacity-40"><div className="flex items-center gap-1"><div className="bg-white/20 p-1 rounded text-white"><Gauge size={10} /></div><div className="text-blue-100 text-[9px] uppercase font-bold">KM</div></div><div className="text-white font-bold text-sm">{shiftState.km.toFixed(1)}</div></button>
+              <button onClick={() => handleOpenEntry('expense')} disabled={!shiftState.isActive || shiftState.isPaused} className="bg-rose-600 hover:bg-rose-500 border border-rose-500 rounded-xl px-2 h-12 flex items-center justify-between transition-all active:scale-95 disabled:opacity-40"><div className="flex items-center gap-1"><div className="bg-white/20 p-1 rounded text-white"><Fuel size={10} /></div><div className="text-rose-100 text-[9px] uppercase font-bold">Gasto</div></div><div className="text-white font-bold text-sm">{formatCurrency(shiftState.expenses)}</div></button>
             </div>
 
-            <div className="grid grid-cols-3 gap-2 mb-2 shrink-0">
-              <div className="bg-slate-900/50 rounded-lg p-2 border border-slate-800 flex flex-col items-center justify-center"><div className="text-slate-400 text-[10px] font-medium uppercase tracking-wide mb-0.5">R$ / Hora</div><div className="text-lg font-bold text-white">{formatCurrency(currentShiftRph)}</div></div>
-              <div className="bg-slate-900/50 rounded-lg p-2 border border-slate-800 flex flex-col items-center justify-center"><div className="text-slate-400 text-[10px] font-medium uppercase tracking-wide mb-0.5">R$ / KM</div><div className="text-lg font-bold text-white">{formatCurrency(currentShiftRpk)}</div></div>
-              <div className="bg-slate-900/50 rounded-lg p-2 border border-slate-800 flex flex-col items-center justify-center"><div className="text-slate-400 text-[10px] font-medium uppercase tracking-wide mb-0.5">Bruto</div><div className="text-lg font-bold text-blue-300">{formatCurrency(currentShiftTotal)}</div></div>
-            </div>
-
-            {/* UPDATED: Compact Footer Buttons (Side by Side) */}
-            <div className="grid grid-cols-2 gap-3 shrink-0 mt-auto pb-2">
-              {!shiftState.isActive ? (
-                <button onClick={handleStartShift} className="col-span-2 bg-indigo-600 hover:bg-indigo-500 text-white h-14 rounded-xl font-bold text-lg shadow-lg shadow-indigo-900/50 flex items-center justify-center gap-3 transition-all active:scale-[0.98] border border-indigo-500"><Play size={20} fill="currentColor" />INICIAR TURNO</button>
-              ) : (
-                <>
-                  <button onClick={handlePauseShift} className={`${shiftState.isPaused ? 'bg-emerald-600 hover:bg-emerald-500 border-emerald-500' : 'bg-slate-800 hover:bg-slate-700 border-slate-700'} text-white h-12 rounded-xl font-bold text-sm flex items-center justify-center gap-2 transition-all active:scale-[0.98] border shadow-lg`}>
-                    {shiftState.isPaused ? <Play size={18} fill="currentColor" /> : <Pause size={18} fill="currentColor" />}
-                    {shiftState.isPaused ? 'RETOMAR' : 'PAUSAR'}
-                  </button>
-                  <button onClick={handleStopShift} className="bg-rose-900/80 hover:bg-rose-900 text-rose-200 border border-rose-800 h-12 rounded-xl font-bold text-sm shadow-lg flex items-center justify-center gap-2 transition-all active:scale-[0.98]"><StopCircle size={18} /> ENCERRAR</button>
-                </>
-              )}
+            {/* STICKY FOOTER ACTIONS */}
+            <div className="fixed bottom-0 left-0 right-0 p-3 bg-slate-950/80 backdrop-blur-md border-t border-slate-900 z-30 md:absolute md:bottom-0 md:bg-transparent md:border-none">
+                <div className="max-w-7xl mx-auto grid grid-cols-3 gap-2 mb-2">
+                    <div className="bg-slate-900/50 rounded-lg p-1 border border-slate-800 flex flex-col items-center justify-center"><div className="text-slate-400 text-[8px] font-medium uppercase tracking-wide">R$/H</div><div className="text-sm font-bold text-white">{formatCurrency(currentShiftRph)}</div></div>
+                    <div className="bg-slate-900/50 rounded-lg p-1 border border-slate-800 flex flex-col items-center justify-center"><div className="text-slate-400 text-[8px] font-medium uppercase tracking-wide">R$/KM</div><div className="text-sm font-bold text-white">{formatCurrency(currentShiftRpk)}</div></div>
+                    <div className="bg-slate-900/50 rounded-lg p-1 border border-slate-800 flex flex-col items-center justify-center"><div className="text-slate-400 text-[8px] font-medium uppercase tracking-wide">BRUTO</div><div className="text-sm font-bold text-blue-300">{formatCurrency(currentShiftTotal)}</div></div>
+                </div>
+                <div className="max-w-7xl mx-auto grid grid-cols-2 gap-3">
+                {!shiftState.isActive ? (
+                    <button onClick={handleStartShift} className="col-span-2 bg-indigo-600 hover:bg-indigo-500 text-white h-12 rounded-xl font-bold text-lg shadow-lg shadow-indigo-900/50 flex items-center justify-center gap-3 transition-all active:scale-[0.98] border border-indigo-500"><Play size={20} fill="currentColor" />INICIAR TURNO</button>
+                ) : (
+                    <>
+                    <button onClick={handlePauseShift} className={`${shiftState.isPaused ? 'bg-emerald-600 hover:bg-emerald-500 border-emerald-500' : 'bg-slate-800 hover:bg-slate-700 border-slate-700'} text-white h-12 rounded-xl font-bold text-sm flex items-center justify-center gap-2 transition-all active:scale-[0.98] border shadow-lg`}>
+                        {shiftState.isPaused ? <Play size={18} fill="currentColor" /> : <Pause size={18} fill="currentColor" />}
+                        {shiftState.isPaused ? 'RETOMAR' : 'PAUSAR'}
+                    </button>
+                    <button onClick={handleStopShift} className="bg-rose-900/80 hover:bg-rose-900 text-rose-200 border border-rose-800 h-12 rounded-xl font-bold text-sm shadow-lg flex items-center justify-center gap-2 transition-all active:scale-[0.98]"><StopCircle size={18} /> ENCERRAR</button>
+                    </>
+                )}
+                </div>
             </div>
           </div>
         ) : (
