@@ -1,6 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import { X, Calendar as CalendarIcon, CheckCircle2, RefreshCcw, Tags, Plus, Pencil, Trash2, Save } from 'lucide-react';
 import { Category } from '../types';
+import { formatCurrencyInputMask, parseCurrencyInputToNumber, formatCurrencyPtBr } from '../utils/currency';
 
 interface SettingsModalProps {
   isOpen: boolean;
@@ -35,17 +36,6 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
   const [localSalary, setLocalSalary] = useState('');
   const [currentMonth, setCurrentMonth] = useState(new Date());
 
-  const formatCurrencyPtBr = (value: number) => new Intl.NumberFormat('pt-BR', {
-    minimumFractionDigits: 2,
-    maximumFractionDigits: 2,
-  }).format(value);
-
-  const normalizeCurrencyInput = (value: string) => {
-    const digitsOnly = (value || '').replace(/\D/g, '').slice(0, 12); // limit to avoid absurd values
-    const numeric = digitsOnly ? Number(digitsOnly) / 100 : 0;
-    return { numeric, formatted: formatCurrencyPtBr(numeric) };
-  };
-
   // Category Edit State
   const [editingCatId, setEditingCatId] = useState<string | null>(null);
   const [catName, setCatName] = useState('');
@@ -53,8 +43,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
   const [isAddingNew, setIsAddingNew] = useState(false);
 
   useEffect(() => {
-    const { formatted } = normalizeCurrencyInput(monthlySalaryGoal.toString());
-    setLocalSalary(formatted);
+    setLocalSalary(formatCurrencyPtBr(monthlySalaryGoal || 0));
   }, [monthlySalaryGoal, isOpen]);
 
   if (!isOpen) return null;
@@ -121,14 +110,13 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
   };
 
   const handleSalaryBlur = () => {
-    const { numeric, formatted } = normalizeCurrencyInput(localSalary);
-    setLocalSalary(formatted);
+    const numeric = parseCurrencyInputToNumber(localSalary);
+    setLocalSalary(formatCurrencyPtBr(numeric));
     onSaveSalaryGoal(numeric);
   };
 
   const handleSalaryChange = (value: string) => {
-    const { formatted } = normalizeCurrencyInput(value);
-    setLocalSalary(formatted);
+    setLocalSalary(formatCurrencyInputMask(value));
   };
 
   // Category Handlers
