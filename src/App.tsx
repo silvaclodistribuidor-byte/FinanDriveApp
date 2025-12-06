@@ -1099,7 +1099,7 @@ function App() {
                       <div className="mt-3 space-y-1 bg-black/10 p-2 rounded-lg">
                          <div className="flex justify-between text-xs font-medium">
                             <span className="opacity-80 flex items-center gap-1"><AlertCircle size={10} /> Mínimo p/ Contas (mês):</span>
-                            <span>{formatCurrency(stats.D)}</span>
+                            <span>{formatCurrency(stats.minimumForBills)}</span>
                          </div>
                          {stats.S > 0 && (
                            <div className="flex justify-between text-xs font-medium">
@@ -1115,7 +1115,7 @@ function App() {
                       </div>
 
                       <p className="text-xs text-white/90 mt-2 leading-tight flex items-center gap-1">
-                         {stats.F < stats.D && <AlertTriangle size={12} className="text-white" />}
+                         {stats.minimumForBills > 0 && <AlertTriangle size={12} className="text-white" />}
                          {stats.statusMessage}
                       </p>
                     </div>
