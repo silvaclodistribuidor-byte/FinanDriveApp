@@ -662,7 +662,8 @@ function App() {
 
     const pendingBillsTotalMonth = unpaidBillsThisMonth.reduce((acc, b) => acc + b.amount, 0);
     const openingBalanceForMonth = openingBalances[currentMonthPrefix] || 0;
-    const cashForBills = openingBalanceForMonth + monthlyNetProfit;
+    // Bill coverage: use monthly net profit (including current shift earnings/expenses) plus the opening balance
+    const cashForBills = openingBalanceForMonth + netProfit;
     const remainingBillsNeed = pendingBillsTotalMonth - cashForBills;
     const minimumForBills = Math.max(remainingBillsNeed, 0);
 
