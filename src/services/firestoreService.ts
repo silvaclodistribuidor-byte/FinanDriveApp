@@ -4,6 +4,25 @@ import { doc, getDoc, setDoc } from 'firebase/firestore';
 import { auth, db } from '../firebaseConfig';
 import { Category } from '../types';
 
+// Firestore não aceita campos "undefined" nos documentos.
+// Esta função remove campos indefinidos e normaliza aninhamentos
+// para evitar erros de permissão/escrita.
+const sanitizeForFirestore = (value: any): any => {
+  if (Array.isArray(value)) {
+    return value.map(sanitizeForFirestore);
+  }
+
+  if (value && typeof value === 'object') {
+    return Object.entries(value).reduce((acc: Record<string, unknown>, [key, val]) => {
+      if (val === undefined) return acc;
+      acc[key] = sanitizeForFirestore(val);
+      return acc;
+    }, {});
+  }
+
+  return value;
+};
+
 // Re-export para ser usado no App.tsx
 export { auth, db };
 
@@ -20,21 +39,23 @@ export const logoutUser = async () => {
 };
 
 // Carrega os dados do motorista logado a partir do Firestore
-export const loadAppData = async (userId: string) => {
-  if (!userId || !db) return null;
+export const loadAppData = async (
+  userId: string
+): Promise<{ data: any | null; exists: boolean }> => {
+  if (!userId || !db) return { data: null, exists: false };
 
   try {
     const ref = doc(db, COLLECTION_NAME, userId);
     const snap = await getDoc(ref);
 
     if (!snap.exists()) {
-      return null;
+      return { data: null, exists: false };
     }
 
-    return snap.data();
+    return { data: snap.data(), exists: true };
   } catch (error) {
     console.error('Erro ao carregar dados do Firestore:', error);
-    return null;
+    return { data: null, exists: false };
   }
 };
 
@@ -44,11 +65,46 @@ export const saveAppData = async (data: any, userId: string) => {
 
   try {
     const ref = doc(db, COLLECTION_NAME, userId);
-    await setDoc(ref, data, { merge: true });
+
+    // Garante que cada categoria tenha owner e sem campos undefined
+    const normalizedCategories = (data.categories || []).map((cat: Category) => ({
+      ...cat,
+      driverId: cat.driverId || userId,
+    }));
+
+    const sanitizedPayload = sanitizeForFirestore({
+      ...data,
+      categories: normalizedCategories,
+    });
+
+    await setDoc(ref, sanitizedPayload, { merge: true });
   } catch (error) {
     console.error('Erro ao salvar dados no Firestore:', error);
     throw error;
   }
+};
+
+// Cria o documento do motorista apenas se ainda não existir
+export const createDriverDocIfMissing = async (data: any, userId: string) => {
+  if (!userId || !db) return false;
+
+  const ref = doc(db, COLLECTION_NAME, userId);
+  const snap = await getDoc(ref);
+
+  if (snap.exists()) return false;
+
+  const normalizedCategories = (data.categories || []).map((cat: Category) => ({
+    ...cat,
+    driverId: cat.driverId || userId,
+  }));
+
+  const sanitizedPayload = sanitizeForFirestore({
+    ...data,
+    categories: normalizedCategories,
+  });
+
+  await setDoc(ref, sanitizedPayload, { merge: true });
+  return true;
 };
 
 // Helpers para categorias (o App já salva tudo junto via saveAppData)
