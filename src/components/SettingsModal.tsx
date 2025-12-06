@@ -35,6 +35,17 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
   const [localSalary, setLocalSalary] = useState('');
   const [currentMonth, setCurrentMonth] = useState(new Date());
 
+  const formatCurrencyPtBr = (value: number) => new Intl.NumberFormat('pt-BR', {
+    minimumFractionDigits: 2,
+    maximumFractionDigits: 2,
+  }).format(value);
+
+  const normalizeCurrencyInput = (value: string) => {
+    const digitsOnly = (value || '').replace(/\D/g, '').slice(0, 12); // limit to avoid absurd values
+    const numeric = digitsOnly ? Number(digitsOnly) / 100 : 0;
+    return { numeric, formatted: formatCurrencyPtBr(numeric) };
+  };
+
   // Category Edit State
   const [editingCatId, setEditingCatId] = useState<string | null>(null);
   const [catName, setCatName] = useState('');
@@ -42,7 +53,8 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
   const [isAddingNew, setIsAddingNew] = useState(false);
 
   useEffect(() => {
-    setLocalSalary(monthlySalaryGoal.toString());
+    const { formatted } = normalizeCurrencyInput(monthlySalaryGoal.toString());
+    setLocalSalary(formatted);
   }, [monthlySalaryGoal, isOpen]);
 
   if (!isOpen) return null;
@@ -109,8 +121,14 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
   };
 
   const handleSalaryBlur = () => {
-    const val = parseFloat(localSalary);
-    if (!isNaN(val)) onSaveSalaryGoal(val);
+    const { numeric, formatted } = normalizeCurrencyInput(localSalary);
+    setLocalSalary(formatted);
+    onSaveSalaryGoal(numeric);
+  };
+
+  const handleSalaryChange = (value: string) => {
+    const { formatted } = normalizeCurrencyInput(value);
+    setLocalSalary(formatted);
   };
 
   // Category Handlers
@@ -186,13 +204,14 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                 <label className="block text-sm font-bold text-slate-700 mb-2">Meta de Salário Bruto (Mês)</label>
                 <div className="relative">
                   <span className="absolute left-4 top-1/2 -translate-y-1/2 text-slate-400 font-bold">R$</span>
-                  <input 
-                    type="number" 
+                  <input
+                    type="text"
+                    inputMode="numeric"
                     value={localSalary}
-                    onChange={e => setLocalSalary(e.target.value)}
+                    onChange={e => handleSalaryChange(e.target.value)}
                     onBlur={handleSalaryBlur}
                     className="w-full pl-10 pr-4 py-3 bg-slate-50 border border-slate-200 rounded-xl text-lg font-bold text-slate-800 focus:ring-2 focus:ring-indigo-500 outline-none"
-                    placeholder="0.00"
+                    placeholder="0,00"
                   />
                 </div>
                 <p className="text-xs text-slate-500 mt-2">Valor total que você deseja faturar no mês (incluindo as contas).</p>
