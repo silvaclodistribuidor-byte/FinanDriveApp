@@ -38,7 +38,13 @@ export const logoutUser = async () => {
   }
 };
 
-// Carrega os dados do motorista logado a partir do Firestore
+/**
+ * Carrega os dados do motorista logado a partir do Firestore.
+ * NÃO cria nem sobrescreve nada, apenas lê.
+ *
+ * - Se não houver doc: retorna { data: null, exists: false }
+ * - Se houver doc:     retorna { data: <payload>, exists: true }
+ */
 export const loadAppData = async (
   userId: string
 ): Promise<{ data: any | null; exists: boolean }> => {
@@ -59,18 +65,23 @@ export const loadAppData = async (
   }
 };
 
-// Salva os dados do motorista logado no Firestore
+/**
+ * Salva os dados do motorista logado no Firestore.
+ * Usa merge: true para NUNCA apagar campos que não estejam no payload atual.
+ */
 export const saveAppData = async (data: any, userId: string) => {
-  if (!userId || !db) return;
+  if (!userId || !db || !data) return;
 
   try {
     const ref = doc(db, COLLECTION_NAME, userId);
 
-    // Garante que cada categoria tenha owner e sem campos undefined
-    const normalizedCategories = (data.categories || []).map((cat: Category) => ({
-      ...cat,
-      driverId: cat.driverId || userId,
-    }));
+    // Garante que cada categoria tenha driverId e sem campos undefined
+    const normalizedCategories = Array.isArray(data.categories)
+      ? (data.categories as Category[]).map((cat) => ({
+          ...cat,
+          driverId: cat.driverId || userId,
+        }))
+      : [];
 
     const sanitizedPayload = sanitizeForFirestore({
       ...data,
@@ -84,7 +95,10 @@ export const saveAppData = async (data: any, userId: string) => {
   }
 };
 
-// Cria o documento do motorista apenas se ainda não existir
+/**
+ * Cria o documento do motorista apenas se ainda não existir.
+ * NÃO sobrescreve docs já existentes.
+ */
 export const createDriverDocIfMissing = async (data: any, userId: string) => {
   if (!userId || !db) return false;
 
@@ -93,10 +107,12 @@ export const createDriverDocIfMissing = async (data: any, userId: string) => {
 
   if (snap.exists()) return false;
 
-  const normalizedCategories = (data.categories || []).map((cat: Category) => ({
-    ...cat,
-    driverId: cat.driverId || userId,
-  }));
+  const normalizedCategories = Array.isArray(data.categories)
+    ? (data.categories as Category[]).map((cat) => ({
+        ...cat,
+        driverId: cat.driverId || userId,
+      }))
+    : [];
 
   const sanitizedPayload = sanitizeForFirestore({
     ...data,
@@ -107,9 +123,12 @@ export const createDriverDocIfMissing = async (data: any, userId: string) => {
   return true;
 };
 
-// Helpers para categorias (o App já salva tudo junto via saveAppData)
+/**
+ * Helpers para categorias
+ * (o App já salva tudo junto via saveAppData)
+ */
 export const getCategories = async (driverId: string): Promise<Category[]> => {
-  const data = await loadAppData(driverId);
+  const { data } = await loadAppData(driverId);
   return (data && (data as any).categories) || [];
 };
 
@@ -131,10 +150,5 @@ export const updateCategory = async (
   _data: Partial<Category>
 ): Promise<void> => {
   // As categorias são persistidas junto com o objeto principal via saveAppData
-  return;
-};
-
-export const deleteCategory = async (_categoryId: string): Promise<void> => {
-  // Idem: o App controla o array e chama saveAppData depois
   return;
 };
