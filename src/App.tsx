@@ -639,13 +639,10 @@ function App() {
     const F_start_of_day = Math.max(0, F - F_today);
 
     // Monthly Status Calc
-    const expensesPaid = Math.min(F, D);
     const salaryAccumulated = Math.max(0, F - D);
     const salaryRemaining = (S > 0) ? Math.max(0, S - salaryAccumulated) : 0;
 
     // Daily Target Calc (Based on Start of Day)
-    const expensesPaidStart = Math.min(F_start_of_day, D);
-    const expensesRemainingStart = Math.max(0, D - expensesPaidStart);
     const salaryAccumulatedStart = Math.max(0, F_start_of_day - D);
     const salaryRemainingStart = (S > 0) ? Math.max(0, S - salaryAccumulatedStart) : 0;
 
@@ -663,8 +660,14 @@ function App() {
     }
     if (lastExpenseDate < todayStr) lastExpenseDate = todayStr;
 
+    const pendingBillsTotalMonth = unpaidBillsThisMonth.reduce((acc, b) => acc + b.amount, 0);
+    const openingBalanceForMonth = openingBalances[currentMonthPrefix] || 0;
+    const cashForBills = openingBalanceForMonth + monthlyNetProfit;
+    const remainingBillsNeed = pendingBillsTotalMonth - cashForBills;
+    const minimumForBills = Math.max(remainingBillsNeed, 0);
+
     const daysRemainingForExpenses = Math.max(1, countWorkDays(todayStr, lastExpenseDate));
-    const expenseTargetToday = expensesRemainingStart / daysRemainingForExpenses;
+    const expenseTargetToday = minimumForBills > 0 ? minimumForBills / daysRemainingForExpenses : 0;
 
     const endOfMonth = new Date(new Date().getFullYear(), new Date().getMonth() + 1, 0);
     const endOfMonthStr = [endOfMonth.getFullYear(), String(endOfMonth.getMonth() + 1).padStart(2,'0'), String(endOfMonth.getDate()).padStart(2,'0')].join('-');
@@ -688,25 +691,24 @@ function App() {
     let dailyStatusMessage = "Parabéns! Você bateu a meta de hoje.";
 
     if (!isGoalMet) {
-      if (F_today < expenseTargetToday) {
+      if (minimumForBills > 0 && F_today < expenseTargetToday) {
         dailyStatusColor = "bg-rose-600";
         dailyStatusMessage = "Atenção: Mínimo para contas ainda não atingido.";
+      } else if (minimumForBills === 0 && salaryRemainingStart > 0) {
+        dailyStatusColor = "bg-amber-500";
+        dailyStatusMessage = "Contas garantidas! Foque na meta salarial.";
       } else {
         dailyStatusColor = "bg-amber-500";
-        dailyStatusMessage = "Contas garantidas! Buscando a meta de salário.";
+        dailyStatusMessage = "Continue avançando na meta do dia.";
       }
     } else {
         dailyStatusColor = "bg-emerald-600";
         const surplus = F_today - dailyGoal;
-        dailyStatusMessage = surplus > 0 
-          ? `Excelente! R$ ${formatCurrency(surplus, true)} acima da meta.` 
+        dailyStatusMessage = surplus > 0
+          ? `Excelente! R$ ${formatCurrency(surplus, true)} acima da meta.`
           : "Meta exata atingida!";
     }
 
-    const openingBalanceForMonth = openingBalances[currentMonthPrefix] || 0;
-    const pendingBillsTotalMonth = billsThisMonth.filter(b => !b.isPaid).reduce((acc, b) => acc + b.amount, 0);
-    const cashForBills = openingBalanceForMonth + monthlyNetProfit;
-    const minimumForBills = Math.max(pendingBillsTotalMonth - cashForBills, 0);
     const remainingToMonthlyGoal = Math.max(0, S - F);
     const billsCovered = minimumForBills === 0;
     const salaryGoalMet = S > 0 ? remainingToMonthlyGoal === 0 : false;
@@ -1192,9 +1194,6 @@ function App() {
                 transactions={transactions}
                 bills={bills}
                 showValues={showValues}
-                currentMonthKey={currentMonthKey}
-                openingBalances={openingBalances}
-                onSaveOpeningBalance={handleOpeningBalanceChange}
               />
             )}
 
@@ -1209,26 +1208,6 @@ function App() {
                   <div className="bg-white p-5 rounded-2xl shadow-sm border border-rose-100 flex items-center justify-between">
                     <div><p className="text-xs font-bold text-rose-600 uppercase mb-1">A Pagar</p><h3 className="text-2xl font-bold text-rose-700">{formatCurrency(billsSummary.pending)}</h3></div>
                     <div className="bg-rose-50 p-3 rounded-full text-rose-600"><AlertCircle size={24} /></div>
-                  </div>
-                </div>
-                <div className="bg-white p-5 rounded-2xl shadow-sm border border-slate-200">
-                  <div className="flex items-center justify-between mb-3">
-                    <div>
-                      <p className="text-xs font-bold text-slate-500 uppercase mb-1">Saldo inicial do mês</p>
-                      <h3 className="text-lg font-bold text-slate-800">{formatCurrency(openingBalances[currentMonthKey] || 0)}</h3>
-                      <p className="text-xs text-slate-500">Somado ao lucro líquido para cobrir contas pendentes deste mês.</p>
-                    </div>
-                    <div className="w-48">
-                      <input
-                        type="text"
-                        inputMode="numeric"
-                        value={openingBalanceInput}
-                        onChange={(e) => handleOpeningBalanceInputChange(e.target.value)}
-                        onBlur={persistOpeningBalance}
-                        className="w-full px-3 py-2 border border-slate-200 rounded-lg bg-slate-50 focus:ring-2 focus:ring-indigo-500 outline-none font-semibold text-slate-800"
-                      />
-                      <p className="text-[11px] text-slate-400 mt-1">Valor salvo para {currentMonthKey}</p>
-                    </div>
                   </div>
                 </div>
                 <div className="flex justify-between items-center bg-white p-6 rounded-2xl shadow-sm border border-slate-200">
@@ -1329,19 +1308,24 @@ function App() {
         categories={categories} 
       />
       <BillModal isOpen={isBillModalOpen} onClose={() => { setIsBillModalOpen(false); setEditingBill(null); }} onSave={handleSaveBill} initialData={editingBill} categories={categories} />
-      <SettingsModal 
-        isOpen={isSettingsModalOpen} 
-        onClose={() => setIsSettingsModalOpen(false)} 
-        workDays={workDays} 
-        onSaveWorkDays={setWorkDays} 
+      <SettingsModal
+        isOpen={isSettingsModalOpen}
+        onClose={() => setIsSettingsModalOpen(false)}
+        workDays={workDays}
+        onSaveWorkDays={setWorkDays}
         plannedWorkDates={plannedWorkDates}
         onSavePlannedDates={setPlannedWorkDates}
         monthlySalaryGoal={monthlySalaryGoal}
         onSaveSalaryGoal={setMonthlySalaryGoal}
-        categories={categories} 
-        onAddCategory={handleAddCategory} 
-        onEditCategory={handleEditCategory} 
-        onDeleteCategory={handleDeleteCategory} 
+        currentMonthKey={currentMonthKey}
+        openingBalanceInput={openingBalanceInput}
+        openingBalanceValue={openingBalances[currentMonthKey] || 0}
+        onChangeOpeningBalance={handleOpeningBalanceInputChange}
+        onBlurOpeningBalance={persistOpeningBalance}
+        categories={categories}
+        onAddCategory={handleAddCategory}
+        onEditCategory={handleEditCategory}
+        onDeleteCategory={handleDeleteCategory}
       />
     </div>
   );

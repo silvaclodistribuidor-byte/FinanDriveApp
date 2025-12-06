@@ -12,6 +12,11 @@ interface SettingsModalProps {
   onSavePlannedDates: (dates: string[]) => void;
   monthlySalaryGoal: number;
   onSaveSalaryGoal: (val: number) => void;
+  currentMonthKey: string;
+  openingBalanceInput: string;
+  openingBalanceValue: number;
+  onChangeOpeningBalance: (value: string) => void;
+  onBlurOpeningBalance: () => void;
   categories: Category[];
   onAddCategory: (name: string, type: 'income' | 'expense' | 'both') => void;
   onEditCategory: (id: string, name: string, type: 'income' | 'expense' | 'both') => void;
@@ -27,6 +32,11 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
   onSavePlannedDates,
   monthlySalaryGoal,
   onSaveSalaryGoal,
+  currentMonthKey,
+  openingBalanceInput,
+  openingBalanceValue,
+  onChangeOpeningBalance,
+  onBlurOpeningBalance,
   categories,
   onAddCategory,
   onEditCategory,
@@ -187,6 +197,27 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
         <div className="overflow-y-auto pr-2">
           {activeTab === 'goals' ? (
             <div className="space-y-6">
+              {/* Opening Balance */}
+              <div>
+                <label className="block text-sm font-bold text-slate-700 mb-2">Saldo inicial do mês</label>
+                <div className="relative">
+                  <span className="absolute left-4 top-1/2 -translate-y-1/2 text-slate-400 font-bold">R$</span>
+                  <input
+                    type="text"
+                    inputMode="numeric"
+                    value={openingBalanceInput}
+                    onChange={e => onChangeOpeningBalance(e.target.value)}
+                    onBlur={onBlurOpeningBalance}
+                    className="w-full pl-10 pr-4 py-3 bg-slate-50 border border-slate-200 rounded-xl text-lg font-bold text-slate-800 focus:ring-2 focus:ring-indigo-500 outline-none"
+                    placeholder="0,00"
+                  />
+                </div>
+                <p className="text-xs text-slate-500 mt-2">Valor salvo para {currentMonthKey}. Somado ao lucro do mês para cobrir contas pendentes, sem reduzir a meta salarial.</p>
+                <p className="text-[11px] text-slate-400 mt-1">Atual: {formatCurrencyPtBr(openingBalanceValue || 0)}</p>
+              </div>
+
+              <hr className="border-slate-100" />
+
               {/* Salary Goal */}
               <div>
                 <label className="block text-sm font-bold text-slate-700 mb-2">Meta de Salário Bruto (Mês)</label>

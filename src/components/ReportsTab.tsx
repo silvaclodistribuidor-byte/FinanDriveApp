@@ -5,15 +5,12 @@ import {
 } from 'recharts';
 import { Clock, Route, Filter, Target } from 'lucide-react';
 import { Transaction, TransactionType, Bill } from '../types';
-import { formatCurrencyInputMask, parseCurrencyInputToNumber, formatCurrencyPtBr } from '../utils/currency';
+import { formatCurrencyPtBr } from '../utils/currency';
 
 interface ReportsTabProps {
   transactions: Transaction[];
   bills: Bill[];
   showValues: boolean;
-  currentMonthKey: string;
-  openingBalances: Record<string, number>;
-  onSaveOpeningBalance: (monthKey: string, value: number) => void;
 }
 
 const parseDateFromInput = (dateStr: string) => {
@@ -29,15 +26,10 @@ const defaultRange = 'month' as const;
 
 type RangeType = 'today' | 'week' | 'month' | 'custom';
 
-export const ReportsTab: React.FC<ReportsTabProps> = ({ transactions, bills, showValues, currentMonthKey, openingBalances, onSaveOpeningBalance }) => {
+export const ReportsTab: React.FC<ReportsTabProps> = ({ transactions, bills, showValues }) => {
   const [shiftRange, setShiftRange] = useState<RangeType>(defaultRange);
   const [shiftStart, setShiftStart] = useState('');
   const [shiftEnd, setShiftEnd] = useState('');
-  const [openingBalanceInput, setOpeningBalanceInput] = useState(formatCurrencyPtBr(openingBalances[currentMonthKey] || 0));
-
-  React.useEffect(() => {
-    setOpeningBalanceInput(formatCurrencyPtBr(openingBalances[currentMonthKey] || 0));
-  }, [openingBalances, currentMonthKey]);
 
   const getRangeDates = (): { start: Date | null; end: Date } => {
     const today = new Date();
@@ -139,17 +131,6 @@ export const ReportsTab: React.FC<ReportsTabProps> = ({ transactions, bills, sho
     };
   }, [shiftSummaries]);
 
-  const handleOpeningBalanceChange = (value: string) => {
-    const masked = formatCurrencyInputMask(value);
-    setOpeningBalanceInput(masked);
-  };
-
-  const persistOpeningBalance = () => {
-    const numeric = parseCurrencyInputToNumber(openingBalanceInput);
-    setOpeningBalanceInput(formatCurrencyPtBr(numeric));
-    onSaveOpeningBalance(currentMonthKey, numeric);
-  };
-
   return (
     <div className="space-y-6 animate-in fade-in slide-in-from-bottom-4 duration-500">
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
@@ -227,25 +208,6 @@ export const ReportsTab: React.FC<ReportsTabProps> = ({ transactions, bills, sho
           </div>
         </div>
 
-        <div className="bg-white p-6 rounded-2xl shadow-sm border border-slate-200 flex flex-col gap-4">
-          <h3 className="font-bold text-slate-800">Saldo inicial do mês</h3>
-          <p className="text-sm text-slate-500">Informe quanto você iniciou este mês em caixa. Esse valor é somado ao lucro líquido para calcular o mínimo necessário para cobrir as contas pendentes, mas <strong>não</strong> reduz a meta salarial.</p>
-          <div className="relative">
-            <span className="absolute left-4 top-1/2 -translate-y-1/2 text-slate-400 font-bold">R$</span>
-            <input
-              type="text"
-              inputMode="numeric"
-              value={openingBalanceInput}
-              onChange={e => handleOpeningBalanceChange(e.target.value)}
-              onBlur={persistOpeningBalance}
-              className="w-full pl-10 pr-4 py-3 bg-slate-50 border border-slate-200 rounded-xl focus:ring-2 focus:ring-indigo-500 outline-none font-bold text-lg text-slate-800"
-            />
-          </div>
-          <div className="bg-slate-50 border border-slate-200 rounded-lg p-3 text-sm text-slate-600">
-            <p><strong>Contas pendentes:</strong> {formatCurrency(bills.filter(b => !b.isPaid && b.dueDate.startsWith(currentMonthKey)).reduce((acc, b) => acc + b.amount, 0), showValues)}</p>
-            <p><strong>Saldo inicial + lucro líquido:</strong> {formatCurrency((openingBalances[currentMonthKey] || 0), showValues)} + lucro do mês</p>
-          </div>
-        </div>
       </div>
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
         <div className="bg-white p-6 rounded-2xl shadow-sm border border-slate-200">
