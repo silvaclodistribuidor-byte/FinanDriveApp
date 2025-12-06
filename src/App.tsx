@@ -44,7 +44,13 @@ import { BillModal } from './components/BillModal';
 import { SettingsModal } from './components/SettingsModal';
 import { ReportsTab } from './components/ReportsTab';
 import { Login } from './components/Login';
-import { loadAppData, saveAppData, auth, logoutUser } from "./services/firestoreService";
+import {
+  loadAppData,
+  saveAppData,
+  auth,
+  logoutUser,
+  createDriverDocIfMissing,
+} from "./services/firestoreService";
 import { Transaction, TransactionType, ExpenseCategory, Bill, ShiftState, DEFAULT_CATEGORIES, Category } from './types';
 
 // Usuário usado internamente no app (derivado do Firebase Auth)
@@ -98,10 +104,34 @@ const renderCustomizedLabel = ({ cx, cy, midAngle, innerRadius, outerRadius, per
 
 const INITIAL_TRANSACTIONS: Transaction[] = [];
 const INITIAL_BILLS: Bill[] = [];
+const createInitialShiftState = (): ShiftState => ({
+  isActive: false,
+  isPaused: false,
+  startTime: null,
+  elapsedSeconds: 0,
+  earnings: { uber: 0, n99: 0, indrive: 0, private: 0 },
+  expenses: 0,
+  expenseList: [],
+  km: 0,
+});
+
+const buildInitialAppState = () => ({
+  transactions: INITIAL_TRANSACTIONS,
+  bills: INITIAL_BILLS,
+  categories: DEFAULT_CATEGORIES,
+  shiftState: createInitialShiftState(),
+  workDays: [1, 2, 3, 4, 5, 6],
+  plannedWorkDates: [],
+  monthlySalaryGoal: 0,
+});
 
 function App() {
   const [user, setUser] = useState<User | null>(null);
   const [authLoading, setAuthLoading] = useState(true);
+  const [hasLoadedData, setHasLoadedData] = useState(false);
+  const [hasPendingChanges, setHasPendingChanges] = useState(false);
+  const isHydratingRef = useRef(false);
+  const hydrationCompleteRef = useRef(false);
 
   // App Data State
   const [transactions, setTransactions] = useState<Transaction[]>(INITIAL_TRANSACTIONS);
@@ -134,21 +164,12 @@ function App() {
   const [entryCategory, setEntryCategory] = useState<'uber' | '99' | 'indrive' | 'private' | 'km' | 'expense' | null>(null);
 
   // Shift Logic
-  const [shiftState, setShiftState] = useState<ShiftState>({
-    isActive: false,
-    isPaused: false,
-    startTime: null,
-    elapsedSeconds: 0,
-    earnings: { uber: 0, n99: 0, indrive: 0, private: 0 },
-    expenses: 0,
-    expenseList: [],
-    km: 0
-  });
+  const [shiftState, setShiftState] = useState<ShiftState>(createInitialShiftState());
 
   const timerRef = useRef<number | null>(null);
 
   // 1. Monitor Authentication
- useEffect(() => {
+  useEffect(() => {
     const unsubscribe = onAuthStateChanged(auth as any, (firebaseUser) => {
       if (firebaseUser) {
         setUser({ uid: firebaseUser.uid, email: firebaseUser.email ?? null });
@@ -160,66 +181,173 @@ function App() {
     return () => unsubscribe();
   }, []);
 
- // 2. Load Data
+  // 2. Load Data and create only when missing
   useEffect(() => {
-    if (user) {
-      setIsLoadingData(true);
-      loadAppData(user.uid).then((data) => {
-        if (data) {
+    if (!user) {
+      setHasLoadedData(false);
+      setHasPendingChanges(false);
+      hydrationCompleteRef.current = false;
+      setTransactions(INITIAL_TRANSACTIONS);
+      setBills(INITIAL_BILLS);
+      setCategories(DEFAULT_CATEGORIES);
+      setShiftState(createInitialShiftState());
+      setWorkDays([1, 2, 3, 4, 5, 6]);
+      setPlannedWorkDates([]);
+      setMonthlySalaryGoal(0);
+      return;
+    }
+
+    console.log('[app] onAuthStateChanged -> start hydration', { userId: user.uid });
+
+    setHasLoadedData(false);
+    setHasPendingChanges(false);
+    setIsLoadingData(true);
+    isHydratingRef.current = true;
+    hydrationCompleteRef.current = false;
+
+    let cancelled = false;
+    let loadErrored = false;
+
+    loadAppData(user.uid)
+      .then(async ({ data, exists }) => {
+        if (cancelled) return;
+
+        if (exists && data) {
+          console.log('[app] hydration: doc exists, applying state', {
+            userId: user.uid,
+            summary: {
+              transactions: Array.isArray(data.transactions) ? data.transactions.length : 0,
+              bills: Array.isArray(data.bills) ? data.bills.length : 0,
+              categories: Array.isArray(data.categories) ? data.categories.length : 0,
+              hasShiftState: Boolean(data.shiftState),
+            },
+          });
           if (data.transactions) setTransactions(data.transactions);
           else setTransactions([]);
-          
+
           if (data.bills) setBills(data.bills);
           else setBills([]);
 
           if (data.categories) {
             if (data.categories.length > 0 && typeof data.categories[0] === 'string') {
-               const migratedCats: Category[] = data.categories.map((c: string, i: number) => ({
-                 id: `migrated_${i}_${Date.now()}`,
-                 name: c,
-                 type: 'both',
-                 driverId: user.uid
-               }));
-               setCategories(migratedCats);
+              const migratedCats: Category[] = data.categories.map((c: string, i: number) => ({
+                id: `migrated_${i}_${Date.now()}`,
+                name: c,
+                type: 'both',
+                driverId: user.uid,
+              }));
+              setCategories(migratedCats);
             } else {
-               setCategories(data.categories);
+              setCategories(data.categories);
             }
           } else {
             setCategories(DEFAULT_CATEGORIES);
           }
-          
-          // Settings
+
           if (data.workDays) setWorkDays(data.workDays);
           if (data.plannedWorkDates) setPlannedWorkDates(data.plannedWorkDates);
           if (data.monthlySalaryGoal) setMonthlySalaryGoal(data.monthlySalaryGoal);
-
           if (data.shiftState) setShiftState(data.shiftState);
+          else setShiftState(createInitialShiftState());
         } else {
-          setTransactions([]);
-          setBills([]);
-          setCategories(DEFAULT_CATEGORIES);
+          console.log('[app] hydration: doc missing, seeding defaults', { userId: user.uid });
+          const initial = buildInitialAppState();
+          setTransactions(initial.transactions);
+          setBills(initial.bills);
+          setCategories(initial.categories);
+          setShiftState(initial.shiftState);
+          setWorkDays(initial.workDays);
+          setPlannedWorkDates(initial.plannedWorkDates);
+          setMonthlySalaryGoal(initial.monthlySalaryGoal);
+
+          await createDriverDocIfMissing(initial, user.uid);
         }
+      })
+      .catch((error) => {
+        loadErrored = true;
+        console.error('[app] hydration error while loading user data', { userId: user.uid, error });
+        setTransactions([]);
+        setBills([]);
+        setCategories(DEFAULT_CATEGORIES);
+      })
+      .finally(() => {
+        if (cancelled) return;
+        if (loadErrored) {
+          setIsLoadingData(false);
+          hydrationCompleteRef.current = false;
+          isHydratingRef.current = false;
+          console.log('[app] hydration aborted due to load error', { userId: user.uid });
+          return;
+        }
+        setHasLoadedData(true);
         setIsLoadingData(false);
+        hydrationCompleteRef.current = true;
+        console.log('[app] hydration complete', { userId: user.uid });
+        setTimeout(() => {
+          isHydratingRef.current = false;
+          console.log('[app] hydration guard released', { userId: user.uid });
+        }, 0);
       });
-    }
+
+    return () => {
+      cancelled = true;
+      isHydratingRef.current = false;
+      hydrationCompleteRef.current = false;
+    };
   }, [user]);
 
-  // 3. Save Data
+  // 3. Mark local changes only after hydration
   useEffect(() => {
-    if (!user || isLoadingData) return;
-    const payload = { 
-      transactions, 
-      bills, 
-      categories, 
-      shiftState, 
-      workDays, 
-      plannedWorkDates, 
-      monthlySalaryGoal 
-    };
-    saveAppData(payload, user.uid).catch((error) => {
-      console.error("Erro ao salvar dados no Firestore:", error);
+    if (!user || !hasLoadedData || isLoadingData || isHydratingRef.current || !hydrationCompleteRef.current) return;
+    console.log('[app] local state changed -> pending changes flagged', {
+      userId: user.uid,
+      guard: {
+        hasLoadedData,
+        isLoadingData,
+        isHydrating: isHydratingRef.current,
+        hydrationComplete: hydrationCompleteRef.current,
+      },
     });
-  }, [transactions, bills, categories, shiftState, workDays, plannedWorkDates, monthlySalaryGoal, user, isLoadingData]);
+    setHasPendingChanges(true);
+  }, [transactions, bills, categories, shiftState, workDays, plannedWorkDates, monthlySalaryGoal, user, hasLoadedData, isLoadingData]);
+
+  // 4. Save Data only when there are pending changes post-hydration
+  useEffect(() => {
+    if (!user || isLoadingData || !hasLoadedData || !hasPendingChanges || isHydratingRef.current || !hydrationCompleteRef.current) return;
+
+    const payload = {
+      transactions,
+      bills,
+      categories,
+      shiftState,
+      workDays,
+      plannedWorkDates,
+      monthlySalaryGoal,
+    };
+
+    console.log('[app] auto-save triggered', {
+      userId: user.uid,
+      summary: {
+        transactions: payload.transactions.length,
+        bills: payload.bills.length,
+        categories: payload.categories.length,
+        hasShiftState: Boolean(payload.shiftState),
+      },
+      guards: {
+        hasLoadedData,
+        isLoadingData,
+        hasPendingChanges,
+        isHydrating: isHydratingRef.current,
+        hydrationComplete: hydrationCompleteRef.current,
+      },
+    });
+
+    saveAppData(payload, user.uid)
+      .then(() => setHasPendingChanges(false))
+      .catch((error) => {
+        console.error("Erro ao salvar dados no Firestore:", error);
+      });
+  }, [user, transactions, bills, categories, shiftState, isLoadingData, workDays, plannedWorkDates, monthlySalaryGoal, hasLoadedData, hasPendingChanges]);
 
   // Shift Timer
   useEffect(() => {
@@ -264,9 +392,15 @@ function App() {
 
   const handleLogout = async () => {
     await logoutUser();
-    setTransactions([]);
-    setBills([]);
-    setShiftState({ isActive: false, isPaused: false, startTime: null, elapsedSeconds: 0, earnings: { uber: 0, n99: 0, indrive: 0, private: 0 }, expenses: 0, expenseList: [], km: 0 });
+    setHasLoadedData(false);
+    setHasPendingChanges(false);
+    setTransactions(INITIAL_TRANSACTIONS);
+    setBills(INITIAL_BILLS);
+    setCategories(DEFAULT_CATEGORIES);
+    setShiftState(createInitialShiftState());
+    setWorkDays([1, 2, 3, 4, 5, 6]);
+    setPlannedWorkDates([]);
+    setMonthlySalaryGoal(0);
   };
 
   const handleAddCategory = (name: string, type: 'income' | 'expense' | 'both') => {
@@ -368,9 +502,18 @@ function App() {
     // Shift & Basic Income
     const currentShiftEarnings = shiftState.earnings.uber + shiftState.earnings.n99 + shiftState.earnings.indrive + shiftState.earnings.private;
     const effectiveShiftEarnings = shiftState.isActive ? currentShiftEarnings : 0;
+    const activeShiftExpenses = shiftState.isActive ? shiftState.expenses : 0;
 
-    const totalIncome = transactions.filter(t => t.type === TransactionType.INCOME).reduce((acc, curr) => acc + curr.amount, 0);
-    const totalExpense = transactions.filter(t => t.type === TransactionType.EXPENSE).reduce((acc, curr) => acc + curr.amount, 0);
+    const incomeTransactionsThisMonth = transactions
+      .filter(t => t.type === TransactionType.INCOME && t.date.startsWith(currentMonthPrefix));
+    const expenseTransactionsThisMonth = transactions
+      .filter(t => t.type === TransactionType.EXPENSE && t.date.startsWith(currentMonthPrefix));
+
+    const monthlyIncomeFromTransactions = incomeTransactionsThisMonth.reduce((acc, curr) => acc + curr.amount, 0);
+    const monthlyExpensesFromTransactions = expenseTransactionsThisMonth.reduce((acc, curr) => acc + curr.amount, 0);
+
+    const totalIncome = monthlyIncomeFromTransactions + effectiveShiftEarnings;
+    const totalExpense = monthlyExpensesFromTransactions + activeShiftExpenses;
     const netProfit = totalIncome - totalExpense;
     const profitMargin = totalIncome > 0 ? (netProfit / totalIncome) * 100 : 0;
     
@@ -379,10 +522,8 @@ function App() {
     const totalMonthlyExpenses = billsThisMonth.reduce((acc, b) => acc + b.amount, 0); 
     const D = totalMonthlyExpenses;
 
-    const savedIncomeThisMonth = transactions
-      .filter(t => t.type === TransactionType.INCOME && t.date.startsWith(currentMonthPrefix))
-      .reduce((acc, t) => acc + t.amount, 0);
-    
+    const savedIncomeThisMonth = monthlyIncomeFromTransactions;
+
     const F = savedIncomeThisMonth + effectiveShiftEarnings;
     const S = monthlySalaryGoal || 0;
 
@@ -398,7 +539,6 @@ function App() {
 
     // Monthly Status Calc
     const expensesPaid = Math.min(F, D);
-    const expensesRemaining = Math.max(0, D - expensesPaid);
     const salaryAccumulated = Math.max(0, F - D);
     const salaryRemaining = (S > 0) ? Math.max(0, S - salaryAccumulated) : 0;
 
@@ -462,26 +602,23 @@ function App() {
           : "Meta exata atingida!";
     }
 
-    // Monthly Status
-    let statusColor = "bg-emerald-600";
-    let statusMessage = "Parabéns! Meta mensal atingida.";
-    let displayGoal = 0;
+    const remainingForBills = Math.max(0, D - netProfit);
+    const remainingToMonthlyGoal = Math.max(0, S - F);
+    const billsCovered = remainingForBills === 0;
+    const salaryGoalMet = S > 0 ? remainingToMonthlyGoal === 0 : false;
 
-    if (S > 0) {
-        displayGoal = S;
-        if (F < D) {
-            statusColor = "bg-rose-600";
-            statusMessage = `Faltam ${formatCurrency(expensesRemaining, true)} para garantir as contas do mês!`;
-        } else if (F < S) {
-            statusColor = "bg-amber-500";
-            statusMessage = `Contas cobertas. Faltam ${formatCurrency(salaryRemaining, true)} para o salário.`;
-        }
-    } else {
-        displayGoal = D;
-        if (F < D) {
-            statusColor = "bg-rose-600";
-            statusMessage = `Faltam ${formatCurrency(expensesRemaining, true)} para cobrir as despesas!`;
-        }
+    let statusColor = "bg-emerald-600";
+    let statusMessage = "✅ Contas do mês garantidas com o lucro atual.";
+    let displayGoal = remainingToMonthlyGoal;
+
+    if (!billsCovered) {
+      statusColor = "bg-rose-600";
+      statusMessage = `Faltam ${formatCurrency(remainingForBills, true)} para garantir as contas do mês!`;
+    } else if (S > 0 && !salaryGoalMet) {
+      statusColor = "bg-amber-500";
+      statusMessage = `Contas cobertas. Faltam ${formatCurrency(remainingToMonthlyGoal, true)} para o salário.`;
+    } else if (S > 0 && salaryGoalMet) {
+      statusMessage = "✅ Contas do mês garantidas com o lucro atual. Meta do mês atingida!";
     }
 
     const pendingBillsTotal = bills.filter(b => !b.isPaid).reduce((acc, b) => acc + b.amount, 0);
@@ -489,11 +626,13 @@ function App() {
     const remainingDays = remainingPlannedDates.length;
 
     return { 
-        totalIncome, totalExpense, netProfit, profitMargin, 
+        totalIncome, totalExpense, netProfit, profitMargin,
         displayGoal, D, F, S, statusColor, statusMessage,
+        remainingForBills, remainingToMonthlyGoal,
         dailyGoal, expenseTargetToday, salaryTargetToday, F_today, dailyStatusColor, dailyStatusMessage,
         remainingForToday, isGoalMet,
-        pendingBillsTotal, remainingDays
+        pendingBillsTotal, remainingDays,
+        totalExpensesThisMonth: totalExpense,
     };
   }, [transactions, bills, plannedWorkDates, monthlySalaryGoal, shiftState]);
 
@@ -812,7 +951,11 @@ function App() {
                       <div className="flex justify-between items-start">
                         <div>
                           <p className="text-white/80 text-sm font-medium mb-1 flex items-center gap-1"><Target size={14} /> Meta Mensal (Real)</p>
-                          <h3 className="text-3xl font-bold mb-1">{formatCurrency(stats.displayGoal)}</h3>
+                          <h3 className="text-3xl font-bold leading-tight">{formatCurrency(stats.remainingToMonthlyGoal)}</h3>
+                          <p className="text-white/80 text-xs font-semibold">
+                            {stats.remainingToMonthlyGoal > 0 ? 'Faltam para bater a meta' : 'Meta do mês atingida!'}
+                          </p>
+                          <p className="text-white/60 text-[11px] font-medium mt-1">Meta do mês: {formatCurrency(stats.S)}</p>
                         </div>
                         <button onClick={() => setIsSettingsModalOpen(true)} className="p-2 bg-white/10 hover:bg-white/20 rounded-lg text-white transition-colors z-20 backdrop-blur-sm" title="Configurar Metas e Categorias"><Settings size={20} /></button>
                       </div>
@@ -843,7 +986,15 @@ function App() {
                     </div>
                   </div>
 
-                  <StatCard title="Lucro Líquido" value={formatCurrency(stats.netProfit)} icon={Wallet} colorClass="bg-slate-800" trend={`${stats.profitMargin.toFixed(0)}% Margem`} trendUp={stats.profitMargin > 30} />
+                  <StatCard
+                    title="Lucro Líquido"
+                    value={formatCurrency(stats.netProfit)}
+                    icon={Wallet}
+                    colorClass="bg-slate-800"
+                    trend={`${stats.profitMargin.toFixed(0)}% Margem`}
+                    trendUp={stats.profitMargin > 30}
+                    extraInfo={`Despesas do mês: ${formatCurrency(stats.totalExpensesThisMonth)}`}
+                  />
                 </div>
                 
                 {/* Progress Bar for Salary Goal */}
