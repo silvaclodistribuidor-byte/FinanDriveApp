@@ -502,9 +502,18 @@ function App() {
     // Shift & Basic Income
     const currentShiftEarnings = shiftState.earnings.uber + shiftState.earnings.n99 + shiftState.earnings.indrive + shiftState.earnings.private;
     const effectiveShiftEarnings = shiftState.isActive ? currentShiftEarnings : 0;
+    const activeShiftExpenses = shiftState.isActive ? shiftState.expenses : 0;
 
-    const totalIncome = transactions.filter(t => t.type === TransactionType.INCOME).reduce((acc, curr) => acc + curr.amount, 0);
-    const totalExpense = transactions.filter(t => t.type === TransactionType.EXPENSE).reduce((acc, curr) => acc + curr.amount, 0);
+    const incomeTransactionsThisMonth = transactions
+      .filter(t => t.type === TransactionType.INCOME && t.date.startsWith(currentMonthPrefix));
+    const expenseTransactionsThisMonth = transactions
+      .filter(t => t.type === TransactionType.EXPENSE && t.date.startsWith(currentMonthPrefix));
+
+    const monthlyIncomeFromTransactions = incomeTransactionsThisMonth.reduce((acc, curr) => acc + curr.amount, 0);
+    const monthlyExpensesFromTransactions = expenseTransactionsThisMonth.reduce((acc, curr) => acc + curr.amount, 0);
+
+    const totalIncome = monthlyIncomeFromTransactions + effectiveShiftEarnings;
+    const totalExpense = monthlyExpensesFromTransactions + activeShiftExpenses;
     const netProfit = totalIncome - totalExpense;
     const profitMargin = totalIncome > 0 ? (netProfit / totalIncome) * 100 : 0;
     
@@ -513,10 +522,8 @@ function App() {
     const totalMonthlyExpenses = billsThisMonth.reduce((acc, b) => acc + b.amount, 0); 
     const D = totalMonthlyExpenses;
 
-    const savedIncomeThisMonth = transactions
-      .filter(t => t.type === TransactionType.INCOME && t.date.startsWith(currentMonthPrefix))
-      .reduce((acc, t) => acc + t.amount, 0);
-    
+    const savedIncomeThisMonth = monthlyIncomeFromTransactions;
+
     const F = savedIncomeThisMonth + effectiveShiftEarnings;
     const S = monthlySalaryGoal || 0;
 
@@ -532,7 +539,6 @@ function App() {
 
     // Monthly Status Calc
     const expensesPaid = Math.min(F, D);
-    const expensesRemaining = Math.max(0, D - expensesPaid);
     const salaryAccumulated = Math.max(0, F - D);
     const salaryRemaining = (S > 0) ? Math.max(0, S - salaryAccumulated) : 0;
 
@@ -596,26 +602,23 @@ function App() {
           : "Meta exata atingida!";
     }
 
-    // Monthly Status
-    let statusColor = "bg-emerald-600";
-    let statusMessage = "Parabéns! Meta mensal atingida.";
-    let displayGoal = 0;
+    const remainingForBills = Math.max(0, D - netProfit);
+    const remainingToMonthlyGoal = Math.max(0, S - F);
+    const billsCovered = remainingForBills === 0;
+    const salaryGoalMet = S > 0 ? remainingToMonthlyGoal === 0 : false;
 
-    if (S > 0) {
-        displayGoal = S;
-        if (F < D) {
-            statusColor = "bg-rose-600";
-            statusMessage = `Faltam ${formatCurrency(expensesRemaining, true)} para garantir as contas do mês!`;
-        } else if (F < S) {
-            statusColor = "bg-amber-500";
-            statusMessage = `Contas cobertas. Faltam ${formatCurrency(salaryRemaining, true)} para o salário.`;
-        }
-    } else {
-        displayGoal = D;
-        if (F < D) {
-            statusColor = "bg-rose-600";
-            statusMessage = `Faltam ${formatCurrency(expensesRemaining, true)} para cobrir as despesas!`;
-        }
+    let statusColor = "bg-emerald-600";
+    let statusMessage = "✅ Contas do mês garantidas com o lucro atual.";
+    let displayGoal = remainingToMonthlyGoal;
+
+    if (!billsCovered) {
+      statusColor = "bg-rose-600";
+      statusMessage = `Faltam ${formatCurrency(remainingForBills, true)} para garantir as contas do mês!`;
+    } else if (S > 0 && !salaryGoalMet) {
+      statusColor = "bg-amber-500";
+      statusMessage = `Contas cobertas. Faltam ${formatCurrency(remainingToMonthlyGoal, true)} para o salário.`;
+    } else if (S > 0 && salaryGoalMet) {
+      statusMessage = "✅ Contas do mês garantidas com o lucro atual. Meta do mês atingida!";
     }
 
     const pendingBillsTotal = bills.filter(b => !b.isPaid).reduce((acc, b) => acc + b.amount, 0);
@@ -623,11 +626,13 @@ function App() {
     const remainingDays = remainingPlannedDates.length;
 
     return { 
-        totalIncome, totalExpense, netProfit, profitMargin, 
+        totalIncome, totalExpense, netProfit, profitMargin,
         displayGoal, D, F, S, statusColor, statusMessage,
+        remainingForBills, remainingToMonthlyGoal,
         dailyGoal, expenseTargetToday, salaryTargetToday, F_today, dailyStatusColor, dailyStatusMessage,
         remainingForToday, isGoalMet,
-        pendingBillsTotal, remainingDays
+        pendingBillsTotal, remainingDays,
+        totalExpensesThisMonth: totalExpense,
     };
   }, [transactions, bills, plannedWorkDates, monthlySalaryGoal, shiftState]);
 
@@ -946,7 +951,11 @@ function App() {
                       <div className="flex justify-between items-start">
                         <div>
                           <p className="text-white/80 text-sm font-medium mb-1 flex items-center gap-1"><Target size={14} /> Meta Mensal (Real)</p>
-                          <h3 className="text-3xl font-bold mb-1">{formatCurrency(stats.displayGoal)}</h3>
+                          <h3 className="text-3xl font-bold leading-tight">{formatCurrency(stats.remainingToMonthlyGoal)}</h3>
+                          <p className="text-white/80 text-xs font-semibold">
+                            {stats.remainingToMonthlyGoal > 0 ? 'Faltam para bater a meta' : 'Meta do mês atingida!'}
+                          </p>
+                          <p className="text-white/60 text-[11px] font-medium mt-1">Meta do mês: {formatCurrency(stats.S)}</p>
                         </div>
                         <button onClick={() => setIsSettingsModalOpen(true)} className="p-2 bg-white/10 hover:bg-white/20 rounded-lg text-white transition-colors z-20 backdrop-blur-sm" title="Configurar Metas e Categorias"><Settings size={20} /></button>
                       </div>
@@ -977,7 +986,15 @@ function App() {
                     </div>
                   </div>
 
-                  <StatCard title="Lucro Líquido" value={formatCurrency(stats.netProfit)} icon={Wallet} colorClass="bg-slate-800" trend={`${stats.profitMargin.toFixed(0)}% Margem`} trendUp={stats.profitMargin > 30} />
+                  <StatCard
+                    title="Lucro Líquido"
+                    value={formatCurrency(stats.netProfit)}
+                    icon={Wallet}
+                    colorClass="bg-slate-800"
+                    trend={`${stats.profitMargin.toFixed(0)}% Margem`}
+                    trendUp={stats.profitMargin > 30}
+                    extraInfo={`Despesas do mês: ${formatCurrency(stats.totalExpensesThisMonth)}`}
+                  />
                 </div>
                 
                 {/* Progress Bar for Salary Goal */}
