@@ -44,6 +44,7 @@ import { BillModal } from './components/BillModal';
 import { SettingsModal } from './components/SettingsModal';
 import { ReportsTab } from './components/ReportsTab';
 import { Login } from './components/Login';
+import { formatCurrencyInputMask, parseCurrencyInputToNumber, formatCurrencyPtBr } from './utils/currency';
 import {
   loadAppData,
   saveAppData,
@@ -144,6 +145,7 @@ function App() {
   const [plannedWorkDates, setPlannedWorkDates] = useState<string[]>([]); // Specific dates YYYY-MM-DD
   const [monthlySalaryGoal, setMonthlySalaryGoal] = useState<number>(0);
   const [openingBalances, setOpeningBalances] = useState<Record<string, number>>({});
+  const [openingBalanceInput, setOpeningBalanceInput] = useState<string>('');
 
   // UI State
   const [isLoadingData, setIsLoadingData] = useState(false);
@@ -169,6 +171,8 @@ function App() {
   const [shiftState, setShiftState] = useState<ShiftState>(createInitialShiftState());
 
   const timerRef = useRef<number | null>(null);
+  const shiftStartRef = useRef<number | null>(null);
+  const elapsedBaseRef = useRef<number>(0);
 
   // 1. Monitor Authentication
   useEffect(() => {
@@ -358,16 +362,69 @@ function App() {
   // Shift Timer
   useEffect(() => {
     if (shiftState.isActive && !shiftState.isPaused) {
-      timerRef.current = window.setInterval(() => {
-        setShiftState(prev => ({ ...prev, elapsedSeconds: prev.elapsedSeconds + 1 }));
+      if (!shiftStartRef.current) {
+        const elapsedFromStart = shiftState.startTime
+          ? Math.max(0, Math.floor((Date.now() - shiftState.startTime) / 1000))
+          : 0;
+        const normalizedElapsed = Math.max(shiftState.elapsedSeconds, elapsedFromStart);
+        elapsedBaseRef.current = normalizedElapsed;
+        shiftStartRef.current = Date.now();
+        if (normalizedElapsed !== shiftState.elapsedSeconds) {
+          setShiftState(prev => ({ ...prev, elapsedSeconds: normalizedElapsed }));
+        }
+      } else {
+        elapsedBaseRef.current = shiftState.elapsedSeconds;
+      }
+
+      const intervalId = window.setInterval(() => {
+        const base = elapsedBaseRef.current;
+        const startTs = shiftStartRef.current ?? Date.now();
+        const elapsedSinceStart = Math.max(0, Math.floor((Date.now() - startTs) / 1000));
+        const nextElapsed = base + elapsedSinceStart;
+        setShiftState(prev => ({ ...prev, elapsedSeconds: nextElapsed }));
       }, 1000);
-    } else {
-      if (timerRef.current) clearInterval(timerRef.current);
+
+      timerRef.current = intervalId;
+      return () => {
+        clearInterval(intervalId);
+        timerRef.current = null;
+      };
     }
-    return () => {
-      if (timerRef.current) clearInterval(timerRef.current);
-    };
-  }, [shiftState.isActive, shiftState.isPaused]);
+
+    if (timerRef.current) {
+      clearInterval(timerRef.current);
+      timerRef.current = null;
+    }
+
+    if (shiftState.isActive && shiftState.isPaused) {
+      shiftStartRef.current = null;
+      elapsedBaseRef.current = shiftState.elapsedSeconds;
+    } else {
+      shiftStartRef.current = null;
+      elapsedBaseRef.current = 0;
+    }
+  }, [shiftState.isActive, shiftState.isPaused, shiftState.startTime]);
+
+  // Normalize elapsed seconds after hydration when a shift is active
+  useEffect(() => {
+    if (!shiftState.isActive) return;
+    const elapsedFromStart = shiftState.startTime
+      ? Math.max(0, Math.floor((Date.now() - shiftState.startTime) / 1000))
+      : shiftState.elapsedSeconds;
+    const normalizedElapsed = Math.max(shiftState.elapsedSeconds, elapsedFromStart);
+    if (normalizedElapsed !== shiftState.elapsedSeconds) {
+      setShiftState(prev => ({ ...prev, elapsedSeconds: normalizedElapsed }));
+    }
+    elapsedBaseRef.current = normalizedElapsed;
+    shiftStartRef.current = shiftState.isPaused ? null : Date.now();
+  }, [shiftState.isActive]);
+
+  useEffect(() => {
+    if (!shiftState.isActive) return;
+    if (shiftState.isPaused) {
+      elapsedBaseRef.current = shiftState.elapsedSeconds;
+    }
+  }, [shiftState.elapsedSeconds, shiftState.isPaused, shiftState.isActive]);
 
   // Initial Check: Populate planned dates if empty
   useEffect(() => {
@@ -404,6 +461,8 @@ function App() {
     setBills(INITIAL_BILLS);
     setCategories(DEFAULT_CATEGORIES);
     setShiftState(createInitialShiftState());
+    shiftStartRef.current = null;
+    elapsedBaseRef.current = 0;
     setWorkDays([1, 2, 3, 4, 5, 6]);
     setPlannedWorkDates([]);
     setMonthlySalaryGoal(0);
@@ -436,7 +495,7 @@ function App() {
 
   const handleEntrySave = (value: number, description?: string, expenseCategory?: ExpenseCategory) => {
     if (!entryCategory) return;
-    
+
     setShiftState(prev => {
       const newState = { ...prev };
       if (entryCategory === 'uber') newState.earnings.uber = value;
@@ -457,15 +516,44 @@ function App() {
     });
   };
 
+  const handleManualKmAdjust = () => {
+    const newKmStr = window.prompt("Ajustar KM total do turno:", shiftState.km.toFixed(1));
+    if (newKmStr === null) return;
+    const parsed = parseFloat(newKmStr.replace(',', '.'));
+    if (Number.isNaN(parsed) || parsed < 0) return;
+    setShiftState(prev => ({ ...prev, km: parsed }));
+  };
+
   const handleStartShift = () => {
-    setShiftState(prev => ({ ...prev, isActive: true, isPaused: false, startTime: Date.now() }));
+    const now = Date.now();
+    shiftStartRef.current = now;
+    elapsedBaseRef.current = 0;
+    setShiftState(prev => ({ ...prev, isActive: true, isPaused: false, startTime: now, elapsedSeconds: 0 }));
   };
 
   const handlePauseShift = () => {
-    setShiftState(prev => ({ ...prev, isPaused: !prev.isPaused }));
+    setShiftState(prev => {
+      if (!prev.isActive) return prev;
+
+      if (prev.isPaused) {
+        const resumeNow = Date.now();
+        shiftStartRef.current = resumeNow;
+        elapsedBaseRef.current = prev.elapsedSeconds;
+        return { ...prev, isPaused: false, startTime: resumeNow };
+      }
+
+      const startTs = shiftStartRef.current ?? prev.startTime ?? Date.now();
+      const elapsedSinceStart = Math.max(0, Math.floor((Date.now() - startTs) / 1000));
+      const updatedElapsed = prev.elapsedSeconds + elapsedSinceStart;
+      elapsedBaseRef.current = updatedElapsed;
+      shiftStartRef.current = null;
+      return { ...prev, isPaused: true, elapsedSeconds: updatedElapsed };
+    });
   };
 
   const handleStopShift = () => {
+    shiftStartRef.current = null;
+    elapsedBaseRef.current = 0;
     setShiftState(prev => ({ ...prev, isPaused: true }));
     setIsShiftModalOpen(true);
   };
@@ -501,6 +589,10 @@ function App() {
   };
 
   const currentMonthKey = useMemo(() => getTodayString().substring(0, 7), []);
+
+  useEffect(() => {
+    setOpeningBalanceInput(formatCurrencyPtBr(openingBalances[currentMonthKey] || 0));
+  }, [openingBalances, currentMonthKey]);
 
   // --- SMART CALCULATIONS ---
   const stats = useMemo(() => {
@@ -730,6 +822,8 @@ function App() {
     setTransactions(newTransactions);
     const resetShiftState = { isActive: false, isPaused: false, startTime: null, elapsedSeconds: 0, earnings: { uber: 0, n99: 0, indrive: 0, private: 0 }, expenses: 0, expenseList: [], km: 0 };
     setShiftState(resetShiftState);
+    shiftStartRef.current = null;
+    elapsedBaseRef.current = 0;
   };
 
   const handleSaveBill = (billData: Omit<Bill, 'id'>) => {
@@ -748,7 +842,19 @@ function App() {
   const handleDeleteTransaction = (id: string) => { setTransactions(prev => prev.filter(t => t.id !== id)); };
 
   const handleOpeningBalanceChange = (monthKey: string, value: number) => {
-    setOpeningBalances(prev => ({ ...prev, [monthKey]: value }));
+    const safeValue = Number.isFinite(value) ? Math.max(0, value) : 0;
+    setOpeningBalances(prev => ({ ...prev, [monthKey]: safeValue }));
+  };
+
+  const handleOpeningBalanceInputChange = (value: string) => {
+    const masked = formatCurrencyInputMask(value);
+    setOpeningBalanceInput(masked);
+  };
+
+  const persistOpeningBalance = () => {
+    const numeric = parseCurrencyInputToNumber(openingBalanceInput);
+    setOpeningBalanceInput(formatCurrencyPtBr(numeric));
+    handleOpeningBalanceChange(currentMonthKey, numeric);
   };
 
   if (authLoading) return <div className="min-h-screen bg-slate-900 flex items-center justify-center text-white">Carregando FinanDrive...</div>;
@@ -911,7 +1017,17 @@ function App() {
               <button onClick={() => handleOpenEntry('99')} disabled={!shiftState.isActive || shiftState.isPaused} className="bg-yellow-400 hover:bg-yellow-300 border border-yellow-500 rounded-xl px-2 h-12 flex items-center justify-between transition-all active:scale-95 disabled:opacity-40"><div className="flex items-center gap-1"><div className="bg-black/10 px-1.5 py-0.5 rounded text-black font-bold text-[9px]">99</div><div className="text-black/60 text-[9px] uppercase font-bold">99</div></div><div className="text-black font-bold text-sm">{formatCurrency(shiftState.earnings.n99)}</div></button>
               <button onClick={() => handleOpenEntry('indrive')} disabled={!shiftState.isActive || shiftState.isPaused} className="bg-green-600 hover:bg-green-500 border border-green-500 rounded-xl px-2 h-12 flex items-center justify-between transition-all active:scale-95 disabled:opacity-40"><div className="flex items-center gap-1"><div className="bg-white/20 px-1.5 py-0.5 rounded text-white font-bold text-[9px]">In</div><div className="text-green-100 text-[9px] uppercase font-bold">InDr</div></div><div className="text-white font-bold text-sm">{formatCurrency(shiftState.earnings.indrive)}</div></button>
               <button onClick={() => handleOpenEntry('private')} disabled={!shiftState.isActive || shiftState.isPaused} className="bg-slate-700 hover:bg-slate-600 border border-slate-600 rounded-xl px-2 h-12 flex items-center justify-between transition-all active:scale-95 disabled:opacity-40"><div className="flex items-center gap-1"><div className="bg-white/10 p-1 rounded text-white"><Wallet size={10} /></div><div className="text-slate-300 text-[9px] uppercase font-bold">Part.</div></div><div className="text-white font-bold text-sm">{formatCurrency(shiftState.earnings.private)}</div></button>
-              <button onClick={() => handleOpenEntry('km')} disabled={!shiftState.isActive || shiftState.isPaused} className="bg-blue-600 hover:bg-blue-500 border border-blue-500 rounded-xl px-2 h-12 flex items-center justify-between transition-all active:scale-95 disabled:opacity-40"><div className="flex items-center gap-1"><div className="bg-white/20 p-1 rounded text-white"><Gauge size={10} /></div><div className="text-blue-100 text-[9px] uppercase font-bold">KM</div></div><div className="text-white font-bold text-sm">{shiftState.km.toFixed(1)}</div></button>
+              <button onClick={() => handleOpenEntry('km')} disabled={!shiftState.isActive || shiftState.isPaused} className="bg-blue-600 hover:bg-blue-500 border border-blue-500 rounded-xl px-2 h-12 flex items-center justify-between transition-all active:scale-95 disabled:opacity-40 relative">
+                <div className="flex items-center gap-1"><div className="bg-white/20 p-1 rounded text-white"><Gauge size={10} /></div><div className="text-blue-100 text-[9px] uppercase font-bold">KM</div></div><div className="text-white font-bold text-sm">{shiftState.km.toFixed(1)}</div>
+                <div
+                  className="absolute -top-1 -right-1 bg-white/80 text-blue-700 rounded-full p-1 shadow border border-blue-200"
+                  onClick={(e) => { e.stopPropagation(); handleManualKmAdjust(); }}
+                  role="button"
+                  tabIndex={0}
+                >
+                  <Edit2 size={12} />
+                </div>
+              </button>
               <button onClick={() => handleOpenEntry('expense')} disabled={!shiftState.isActive || shiftState.isPaused} className="bg-rose-600 hover:bg-rose-500 border border-rose-500 rounded-xl px-2 h-12 flex items-center justify-between transition-all active:scale-95 disabled:opacity-40"><div className="flex items-center gap-1"><div className="bg-white/20 p-1 rounded text-white"><Fuel size={10} /></div><div className="text-rose-100 text-[9px] uppercase font-bold">Gasto</div></div><div className="text-white font-bold text-sm">{formatCurrency(shiftState.expenses)}</div></button>
             </div>
 
@@ -1093,6 +1209,26 @@ function App() {
                   <div className="bg-white p-5 rounded-2xl shadow-sm border border-rose-100 flex items-center justify-between">
                     <div><p className="text-xs font-bold text-rose-600 uppercase mb-1">A Pagar</p><h3 className="text-2xl font-bold text-rose-700">{formatCurrency(billsSummary.pending)}</h3></div>
                     <div className="bg-rose-50 p-3 rounded-full text-rose-600"><AlertCircle size={24} /></div>
+                  </div>
+                </div>
+                <div className="bg-white p-5 rounded-2xl shadow-sm border border-slate-200">
+                  <div className="flex items-center justify-between mb-3">
+                    <div>
+                      <p className="text-xs font-bold text-slate-500 uppercase mb-1">Saldo inicial do mês</p>
+                      <h3 className="text-lg font-bold text-slate-800">{formatCurrency(openingBalances[currentMonthKey] || 0)}</h3>
+                      <p className="text-xs text-slate-500">Somado ao lucro líquido para cobrir contas pendentes deste mês.</p>
+                    </div>
+                    <div className="w-48">
+                      <input
+                        type="text"
+                        inputMode="numeric"
+                        value={openingBalanceInput}
+                        onChange={(e) => handleOpeningBalanceInputChange(e.target.value)}
+                        onBlur={persistOpeningBalance}
+                        className="w-full px-3 py-2 border border-slate-200 rounded-lg bg-slate-50 focus:ring-2 focus:ring-indigo-500 outline-none font-semibold text-slate-800"
+                      />
+                      <p className="text-[11px] text-slate-400 mt-1">Valor salvo para {currentMonthKey}</p>
+                    </div>
                   </div>
                 </div>
                 <div className="flex justify-between items-center bg-white p-6 rounded-2xl shadow-sm border border-slate-200">
