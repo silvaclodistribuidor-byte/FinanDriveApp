@@ -44,7 +44,13 @@ import { BillModal } from './components/BillModal';
 import { SettingsModal } from './components/SettingsModal';
 import { ReportsTab } from './components/ReportsTab';
 import { Login } from './components/Login';
-import { loadAppData, saveAppData, auth, logoutUser } from "./services/firestoreService";
+import {
+  loadAppData,
+  saveAppData,
+  auth,
+  logoutUser,
+  createDriverDocIfMissing,
+} from "./services/firestoreService";
 import { Transaction, TransactionType, ExpenseCategory, Bill, ShiftState, DEFAULT_CATEGORIES, Category } from './types';
 
 // Usuário usado internamente no app (derivado do Firebase Auth)
@@ -98,10 +104,34 @@ const renderCustomizedLabel = ({ cx, cy, midAngle, innerRadius, outerRadius, per
 
 const INITIAL_TRANSACTIONS: Transaction[] = [];
 const INITIAL_BILLS: Bill[] = [];
+const createInitialShiftState = (): ShiftState => ({
+  isActive: false,
+  isPaused: false,
+  startTime: null,
+  elapsedSeconds: 0,
+  earnings: { uber: 0, n99: 0, indrive: 0, private: 0 },
+  expenses: 0,
+  expenseList: [],
+  km: 0,
+});
+
+const buildInitialAppState = () => ({
+  transactions: INITIAL_TRANSACTIONS,
+  bills: INITIAL_BILLS,
+  categories: DEFAULT_CATEGORIES,
+  shiftState: createInitialShiftState(),
+  workDays: [1, 2, 3, 4, 5, 6],
+  plannedWorkDates: [],
+  monthlySalaryGoal: 0,
+});
 
 function App() {
   const [user, setUser] = useState<User | null>(null);
   const [authLoading, setAuthLoading] = useState(true);
+  const [hasLoadedData, setHasLoadedData] = useState(false);
+  const [hasPendingChanges, setHasPendingChanges] = useState(false);
+  const isHydratingRef = useRef(false);
+  const hydrationCompleteRef = useRef(false);
 
   // App Data State
   const [transactions, setTransactions] = useState<Transaction[]>(INITIAL_TRANSACTIONS);
@@ -134,21 +164,12 @@ function App() {
   const [entryCategory, setEntryCategory] = useState<'uber' | '99' | 'indrive' | 'private' | 'km' | 'expense' | null>(null);
 
   // Shift Logic
-  const [shiftState, setShiftState] = useState<ShiftState>({
-    isActive: false,
-    isPaused: false,
-    startTime: null,
-    elapsedSeconds: 0,
-    earnings: { uber: 0, n99: 0, indrive: 0, private: 0 },
-    expenses: 0,
-    expenseList: [],
-    km: 0
-  });
+  const [shiftState, setShiftState] = useState<ShiftState>(createInitialShiftState());
 
   const timerRef = useRef<number | null>(null);
 
   // 1. Monitor Authentication
- useEffect(() => {
+  useEffect(() => {
     const unsubscribe = onAuthStateChanged(auth as any, (firebaseUser) => {
       if (firebaseUser) {
         setUser({ uid: firebaseUser.uid, email: firebaseUser.email ?? null });
@@ -160,66 +181,173 @@ function App() {
     return () => unsubscribe();
   }, []);
 
- // 2. Load Data
+  // 2. Load Data and create only when missing
   useEffect(() => {
-    if (user) {
-      setIsLoadingData(true);
-      loadAppData(user.uid).then((data) => {
-        if (data) {
+    if (!user) {
+      setHasLoadedData(false);
+      setHasPendingChanges(false);
+      hydrationCompleteRef.current = false;
+      setTransactions(INITIAL_TRANSACTIONS);
+      setBills(INITIAL_BILLS);
+      setCategories(DEFAULT_CATEGORIES);
+      setShiftState(createInitialShiftState());
+      setWorkDays([1, 2, 3, 4, 5, 6]);
+      setPlannedWorkDates([]);
+      setMonthlySalaryGoal(0);
+      return;
+    }
+
+    console.log('[app] onAuthStateChanged -> start hydration', { userId: user.uid });
+
+    setHasLoadedData(false);
+    setHasPendingChanges(false);
+    setIsLoadingData(true);
+    isHydratingRef.current = true;
+    hydrationCompleteRef.current = false;
+
+    let cancelled = false;
+    let loadErrored = false;
+
+    loadAppData(user.uid)
+      .then(async ({ data, exists }) => {
+        if (cancelled) return;
+
+        if (exists && data) {
+          console.log('[app] hydration: doc exists, applying state', {
+            userId: user.uid,
+            summary: {
+              transactions: Array.isArray(data.transactions) ? data.transactions.length : 0,
+              bills: Array.isArray(data.bills) ? data.bills.length : 0,
+              categories: Array.isArray(data.categories) ? data.categories.length : 0,
+              hasShiftState: Boolean(data.shiftState),
+            },
+          });
           if (data.transactions) setTransactions(data.transactions);
           else setTransactions([]);
-          
+
           if (data.bills) setBills(data.bills);
           else setBills([]);
 
           if (data.categories) {
             if (data.categories.length > 0 && typeof data.categories[0] === 'string') {
-               const migratedCats: Category[] = data.categories.map((c: string, i: number) => ({
-                 id: `migrated_${i}_${Date.now()}`,
-                 name: c,
-                 type: 'both',
-                 driverId: user.uid
-               }));
-               setCategories(migratedCats);
+              const migratedCats: Category[] = data.categories.map((c: string, i: number) => ({
+                id: `migrated_${i}_${Date.now()}`,
+                name: c,
+                type: 'both',
+                driverId: user.uid,
+              }));
+              setCategories(migratedCats);
             } else {
-               setCategories(data.categories);
+              setCategories(data.categories);
             }
           } else {
             setCategories(DEFAULT_CATEGORIES);
           }
-          
-          // Settings
+
           if (data.workDays) setWorkDays(data.workDays);
           if (data.plannedWorkDates) setPlannedWorkDates(data.plannedWorkDates);
           if (data.monthlySalaryGoal) setMonthlySalaryGoal(data.monthlySalaryGoal);
-
           if (data.shiftState) setShiftState(data.shiftState);
+          else setShiftState(createInitialShiftState());
         } else {
-          setTransactions([]);
-          setBills([]);
-          setCategories(DEFAULT_CATEGORIES);
+          console.log('[app] hydration: doc missing, seeding defaults', { userId: user.uid });
+          const initial = buildInitialAppState();
+          setTransactions(initial.transactions);
+          setBills(initial.bills);
+          setCategories(initial.categories);
+          setShiftState(initial.shiftState);
+          setWorkDays(initial.workDays);
+          setPlannedWorkDates(initial.plannedWorkDates);
+          setMonthlySalaryGoal(initial.monthlySalaryGoal);
+
+          await createDriverDocIfMissing(initial, user.uid);
         }
+      })
+      .catch((error) => {
+        loadErrored = true;
+        console.error('[app] hydration error while loading user data', { userId: user.uid, error });
+        setTransactions([]);
+        setBills([]);
+        setCategories(DEFAULT_CATEGORIES);
+      })
+      .finally(() => {
+        if (cancelled) return;
+        if (loadErrored) {
+          setIsLoadingData(false);
+          hydrationCompleteRef.current = false;
+          isHydratingRef.current = false;
+          console.log('[app] hydration aborted due to load error', { userId: user.uid });
+          return;
+        }
+        setHasLoadedData(true);
         setIsLoadingData(false);
+        hydrationCompleteRef.current = true;
+        console.log('[app] hydration complete', { userId: user.uid });
+        setTimeout(() => {
+          isHydratingRef.current = false;
+          console.log('[app] hydration guard released', { userId: user.uid });
+        }, 0);
       });
-    }
+
+    return () => {
+      cancelled = true;
+      isHydratingRef.current = false;
+      hydrationCompleteRef.current = false;
+    };
   }, [user]);
 
-  // 3. Save Data
+  // 3. Mark local changes only after hydration
   useEffect(() => {
-    if (!user || isLoadingData) return;
-    const payload = { 
-      transactions, 
-      bills, 
-      categories, 
-      shiftState, 
-      workDays, 
-      plannedWorkDates, 
-      monthlySalaryGoal 
-    };
-    saveAppData(payload, user.uid).catch((error) => {
-      console.error("Erro ao salvar dados no Firestore:", error);
+    if (!user || !hasLoadedData || isLoadingData || isHydratingRef.current || !hydrationCompleteRef.current) return;
+    console.log('[app] local state changed -> pending changes flagged', {
+      userId: user.uid,
+      guard: {
+        hasLoadedData,
+        isLoadingData,
+        isHydrating: isHydratingRef.current,
+        hydrationComplete: hydrationCompleteRef.current,
+      },
     });
-  }, [transactions, bills, categories, shiftState, workDays, plannedWorkDates, monthlySalaryGoal, user, isLoadingData]);
+    setHasPendingChanges(true);
+  }, [transactions, bills, categories, shiftState, workDays, plannedWorkDates, monthlySalaryGoal, user, hasLoadedData, isLoadingData]);
+
+  // 4. Save Data only when there are pending changes post-hydration
+  useEffect(() => {
+    if (!user || isLoadingData || !hasLoadedData || !hasPendingChanges || isHydratingRef.current || !hydrationCompleteRef.current) return;
+
+    const payload = {
+      transactions,
+      bills,
+      categories,
+      shiftState,
+      workDays,
+      plannedWorkDates,
+      monthlySalaryGoal,
+    };
+
+    console.log('[app] auto-save triggered', {
+      userId: user.uid,
+      summary: {
+        transactions: payload.transactions.length,
+        bills: payload.bills.length,
+        categories: payload.categories.length,
+        hasShiftState: Boolean(payload.shiftState),
+      },
+      guards: {
+        hasLoadedData,
+        isLoadingData,
+        hasPendingChanges,
+        isHydrating: isHydratingRef.current,
+        hydrationComplete: hydrationCompleteRef.current,
+      },
+    });
+
+    saveAppData(payload, user.uid)
+      .then(() => setHasPendingChanges(false))
+      .catch((error) => {
+        console.error("Erro ao salvar dados no Firestore:", error);
+      });
+  }, [user, transactions, bills, categories, shiftState, isLoadingData, workDays, plannedWorkDates, monthlySalaryGoal, hasLoadedData, hasPendingChanges]);
 
   // Shift Timer
   useEffect(() => {
@@ -264,9 +392,15 @@ function App() {
 
   const handleLogout = async () => {
     await logoutUser();
-    setTransactions([]);
-    setBills([]);
-    setShiftState({ isActive: false, isPaused: false, startTime: null, elapsedSeconds: 0, earnings: { uber: 0, n99: 0, indrive: 0, private: 0 }, expenses: 0, expenseList: [], km: 0 });
+    setHasLoadedData(false);
+    setHasPendingChanges(false);
+    setTransactions(INITIAL_TRANSACTIONS);
+    setBills(INITIAL_BILLS);
+    setCategories(DEFAULT_CATEGORIES);
+    setShiftState(createInitialShiftState());
+    setWorkDays([1, 2, 3, 4, 5, 6]);
+    setPlannedWorkDates([]);
+    setMonthlySalaryGoal(0);
   };
 
   const handleAddCategory = (name: string, type: 'income' | 'expense' | 'both') => {
