@@ -206,6 +206,7 @@ function App() {
     hydrationCompleteRef.current = false;
 
     let cancelled = false;
+    let loadErrored = false;
 
     loadAppData(user.uid)
       .then(async ({ data, exists }) => {
@@ -263,13 +264,21 @@ function App() {
         }
       })
       .catch((error) => {
-        console.error('Erro ao carregar dados do usuário:', error);
+        loadErrored = true;
+        console.error('[app] hydration error while loading user data', { userId: user.uid, error });
         setTransactions([]);
         setBills([]);
         setCategories(DEFAULT_CATEGORIES);
       })
       .finally(() => {
         if (cancelled) return;
+        if (loadErrored) {
+          setIsLoadingData(false);
+          hydrationCompleteRef.current = false;
+          isHydratingRef.current = false;
+          console.log('[app] hydration aborted due to load error', { userId: user.uid });
+          return;
+        }
         setHasLoadedData(true);
         setIsLoadingData(false);
         hydrationCompleteRef.current = true;
