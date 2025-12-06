@@ -38,7 +38,7 @@ import { BillModal } from './components/BillModal';
 import { SettingsModal } from './components/SettingsModal';
 import { ReportsTab } from './components/ReportsTab';
 import { Login } from './components/Login';
-import { loadAppData, saveAppData, auth, logoutUser } from "./services/firestoreService";
+import { loadAppData, saveAppData, auth, logoutUser, createDriverDocIfMissing } from "./services/firestoreService";
 import { Transaction, TransactionType, ExpenseCategory, Bill, ShiftState, DEFAULT_CATEGORIES } from './types';
 import { onAuthStateChanged, User } from "firebase/auth";
 
@@ -87,10 +87,23 @@ const renderCustomizedLabel = ({ cx, cy, midAngle, innerRadius, outerRadius, per
 
 const INITIAL_TRANSACTIONS: Transaction[] = [];
 const INITIAL_BILLS: Bill[] = [];
+const createInitialShiftState = (): ShiftState => ({
+  isActive: false,
+  isPaused: false,
+  startTime: null,
+  elapsedSeconds: 0,
+  earnings: { uber: 0, n99: 0, indrive: 0, private: 0 },
+  expenses: 0,
+  expenseList: [],
+  km: 0,
+});
 
 function App() {
   const [user, setUser] = useState<User | null>(null);
   const [authLoading, setAuthLoading] = useState(true);
+  const [hasLoadedData, setHasLoadedData] = useState(false);
+  const [hasPendingChanges, setHasPendingChanges] = useState(false);
+  const isHydratingRef = useRef(false);
 
   // App Data State
   const [transactions, setTransactions] = useState<Transaction[]>(INITIAL_TRANSACTIONS);
@@ -119,16 +132,7 @@ function App() {
   const [entryCategory, setEntryCategory] = useState<'uber' | '99' | 'indrive' | 'private' | 'km' | 'expense' | null>(null);
 
   // Shift Logic
-  const [shiftState, setShiftState] = useState<ShiftState>({
-    isActive: false,
-    isPaused: false,
-    startTime: null,
-    elapsedSeconds: 0,
-    earnings: { uber: 0, n99: 0, indrive: 0, private: 0 },
-    expenses: 0,
-    expenseList: [],
-    km: 0
-  });
+  const [shiftState, setShiftState] = useState<ShiftState>(() => createInitialShiftState());
 
   const timerRef = useRef<number | null>(null);
 
@@ -148,40 +152,91 @@ function App() {
   // 2. Carregar dados quando o usuário muda
   useEffect(() => {
     if (user) {
+      setHasLoadedData(false);
+      setHasPendingChanges(false);
       setIsLoadingData(true);
-      loadAppData(user.uid).then((data) => {
-        if (data) {
-          if (data.transactions) setTransactions(data.transactions);
-          else setTransactions([]); // Novo usuário limpa dados antigos da memória
-          
-          if (data.bills) setBills(data.bills);
-          else setBills([]);
+      isHydratingRef.current = true;
+      let cancelled = false;
 
-          if (data.categories) setCategories(data.categories);
+      loadAppData(user.uid)
+        .then(async ({ data, exists }) => {
+          if (cancelled) return;
 
-          // Carrega estado do turno se existir
-          if (data.shiftState) setShiftState(data.shiftState);
-        } else {
-          // Usuário novo, zera tudo para não mostrar dados de cache
+          if (exists && data) {
+            if (data.transactions) setTransactions(data.transactions);
+            else setTransactions([]);
+
+            if (data.bills) setBills(data.bills);
+            else setBills([]);
+
+            if (data.categories) setCategories(data.categories);
+            else setCategories(DEFAULT_CATEGORIES);
+
+            if (data.shiftState) setShiftState(data.shiftState);
+            else setShiftState(createInitialShiftState());
+          } else {
+            // Documento ainda não existe: inicializa estado e cria apenas uma vez
+            setTransactions([]);
+            setBills([]);
+            setCategories(DEFAULT_CATEGORIES);
+            setShiftState(createInitialShiftState());
+
+            await createDriverDocIfMissing(
+              {
+                transactions: [],
+                bills: [],
+                categories: DEFAULT_CATEGORIES,
+                shiftState: createInitialShiftState(),
+              },
+              user.uid
+            );
+          }
+        })
+        .catch((error) => {
+          console.error('Erro ao carregar dados do usuário:', error);
           setTransactions([]);
           setBills([]);
-          // Mantém shiftState padrão (zerado)
-        }
-        setIsLoadingData(false);
-      });
+        })
+        .finally(() => {
+          if (cancelled) return;
+          setHasLoadedData(true);
+          setIsLoadingData(false);
+          // Garante que as alterações iniciais (hidratação) não disparem save
+          setTimeout(() => { isHydratingRef.current = false; }, 0);
+        });
+
+      return () => {
+        cancelled = true;
+        isHydratingRef.current = false;
+      };
+    } else {
+      // Reset para logout
+      setHasLoadedData(false);
+      setHasPendingChanges(false);
+      setTransactions([]);
+      setBills([]);
+      setCategories(DEFAULT_CATEGORIES);
+      setShiftState(createInitialShiftState());
     }
   }, [user]);
 
+  // 2b. Marca alterações locais apenas após hidratação inicial
+  useEffect(() => {
+    if (!user || !hasLoadedData || isLoadingData || isHydratingRef.current) return;
+    setHasPendingChanges(true);
+  }, [transactions, bills, categories, shiftState, user, hasLoadedData, isLoadingData]);
+
   // 3. Salvar dados quando mudam (apenas se logado e não estiver carregando)
   useEffect(() => {
-    if (!user || isLoadingData) return;
-    
-    // Inclui shiftState no payload
+    if (!user || isLoadingData || !hasLoadedData || !hasPendingChanges || isHydratingRef.current) return;
+
     const payload = { transactions, bills, categories, shiftState };
-    saveAppData(payload, user.uid).catch((error) => {
-      console.error("Erro ao salvar dados no Firestore:", error);
-    });
-  }, [transactions, bills, categories, shiftState, user, isLoadingData]);
+    saveAppData(payload, user.uid)
+      .then(() => setHasPendingChanges(false))
+      .catch((error) => {
+        console.error("Erro ao salvar dados no Firestore:", error);
+      });
+  }, [transactions, bills, categories, shiftState, user, isLoadingData, hasLoadedData, hasPendingChanges]);
 
   // Timer do Turno
   useEffect(() => {
@@ -203,7 +258,7 @@ function App() {
     await logoutUser();
     setTransactions([]);
     setBills([]);
-    setShiftState({ isActive: false, isPaused: false, startTime: null, elapsedSeconds: 0, earnings: { uber: 0, n99: 0, indrive: 0, private: 0 }, expenses: 0, expenseList: [], km: 0 });
+    setShiftState(createInitialShiftState());
   };
 
   const handleAddCategory = (name: string) => {
@@ -438,7 +493,7 @@ function App() {
     setTransactions(newTransactions);
     
     // Reseta o estado do turno (inativo)
-    const resetShiftState = { isActive: false, isPaused: false, startTime: null, elapsedSeconds: 0, earnings: { uber: 0, n99: 0, indrive: 0, private: 0 }, expenses: 0, expenseList: [], km: 0 };
+    const resetShiftState = createInitialShiftState();
     setShiftState(resetShiftState);
 
     // Força salvamento imediato do histórico E do estado resetado
