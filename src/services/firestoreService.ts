@@ -49,10 +49,24 @@ export const loadAppData = async (
     const snap = await getDoc(ref);
 
     if (!snap.exists()) {
+      console.log('[firestoreService] loadAppData: doc NOT found', { userId });
       return { data: null, exists: false };
     }
 
-    return { data: snap.data(), exists: true };
+    const data = snap.data();
+    const summary = {
+      transactions: Array.isArray((data as any)?.transactions)
+        ? (data as any).transactions.length
+        : 0,
+      bills: Array.isArray((data as any)?.bills) ? (data as any).bills.length : 0,
+      categories: Array.isArray((data as any)?.categories)
+        ? (data as any).categories.length
+        : 0,
+      hasShiftState: Boolean((data as any)?.shiftState),
+    };
+    console.log('[firestoreService] loadAppData: doc found', { userId, summary });
+
+    return { data, exists: true };
   } catch (error) {
     console.error('Erro ao carregar dados do Firestore:', error);
     return { data: null, exists: false };
@@ -77,6 +91,16 @@ export const saveAppData = async (data: any, userId: string) => {
       categories: normalizedCategories,
     });
 
+    console.log('[firestoreService] saveAppData', {
+      userId,
+      summary: {
+        transactions: Array.isArray(data?.transactions) ? data.transactions.length : 0,
+        bills: Array.isArray(data?.bills) ? data.bills.length : 0,
+        categories: Array.isArray(data?.categories) ? data.categories.length : 0,
+        hasShiftState: Boolean(data?.shiftState),
+      },
+    });
+
     await setDoc(ref, sanitizedPayload, { merge: true });
   } catch (error) {
     console.error('Erro ao salvar dados no Firestore:', error);
@@ -91,7 +115,12 @@ export const createDriverDocIfMissing = async (data: any, userId: string) => {
   const ref = doc(db, COLLECTION_NAME, userId);
   const snap = await getDoc(ref);
 
-  if (snap.exists()) return false;
+  if (snap.exists()) {
+    console.log('[firestoreService] createDriverDocIfMissing: already exists, skipping', {
+      userId,
+    });
+    return false;
+  }
 
   const normalizedCategories = (data.categories || []).map((cat: Category) => ({
     ...cat,
@@ -101,6 +130,16 @@ export const createDriverDocIfMissing = async (data: any, userId: string) => {
   const sanitizedPayload = sanitizeForFirestore({
     ...data,
     categories: normalizedCategories,
+  });
+
+  console.log('[firestoreService] createDriverDocIfMissing: creating doc', {
+    userId,
+    summary: {
+      transactions: Array.isArray(data?.transactions) ? data.transactions.length : 0,
+      bills: Array.isArray(data?.bills) ? data.bills.length : 0,
+      categories: Array.isArray(data?.categories) ? data.categories.length : 0,
+      hasShiftState: Boolean(data?.shiftState),
+    },
   });
 
   await setDoc(ref, sanitizedPayload, { merge: true });

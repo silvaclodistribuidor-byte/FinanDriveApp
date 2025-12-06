@@ -131,6 +131,7 @@ function App() {
   const [hasLoadedData, setHasLoadedData] = useState(false);
   const [hasPendingChanges, setHasPendingChanges] = useState(false);
   const isHydratingRef = useRef(false);
+  const hydrationCompleteRef = useRef(false);
 
   // App Data State
   const [transactions, setTransactions] = useState<Transaction[]>(INITIAL_TRANSACTIONS);
@@ -185,6 +186,7 @@ function App() {
     if (!user) {
       setHasLoadedData(false);
       setHasPendingChanges(false);
+      hydrationCompleteRef.current = false;
       setTransactions(INITIAL_TRANSACTIONS);
       setBills(INITIAL_BILLS);
       setCategories(DEFAULT_CATEGORIES);
@@ -195,10 +197,13 @@ function App() {
       return;
     }
 
+    console.log('[app] onAuthStateChanged -> start hydration', { userId: user.uid });
+
     setHasLoadedData(false);
     setHasPendingChanges(false);
     setIsLoadingData(true);
     isHydratingRef.current = true;
+    hydrationCompleteRef.current = false;
 
     let cancelled = false;
 
@@ -207,6 +212,15 @@ function App() {
         if (cancelled) return;
 
         if (exists && data) {
+          console.log('[app] hydration: doc exists, applying state', {
+            userId: user.uid,
+            summary: {
+              transactions: Array.isArray(data.transactions) ? data.transactions.length : 0,
+              bills: Array.isArray(data.bills) ? data.bills.length : 0,
+              categories: Array.isArray(data.categories) ? data.categories.length : 0,
+              hasShiftState: Boolean(data.shiftState),
+            },
+          });
           if (data.transactions) setTransactions(data.transactions);
           else setTransactions([]);
 
@@ -235,6 +249,7 @@ function App() {
           if (data.shiftState) setShiftState(data.shiftState);
           else setShiftState(createInitialShiftState());
         } else {
+          console.log('[app] hydration: doc missing, seeding defaults', { userId: user.uid });
           const initial = buildInitialAppState();
           setTransactions(initial.transactions);
           setBills(initial.bills);
@@ -257,26 +272,39 @@ function App() {
         if (cancelled) return;
         setHasLoadedData(true);
         setIsLoadingData(false);
+        hydrationCompleteRef.current = true;
+        console.log('[app] hydration complete', { userId: user.uid });
         setTimeout(() => {
           isHydratingRef.current = false;
+          console.log('[app] hydration guard released', { userId: user.uid });
         }, 0);
       });
 
     return () => {
       cancelled = true;
       isHydratingRef.current = false;
+      hydrationCompleteRef.current = false;
     };
   }, [user]);
 
   // 3. Mark local changes only after hydration
   useEffect(() => {
-    if (!user || !hasLoadedData || isLoadingData || isHydratingRef.current) return;
+    if (!user || !hasLoadedData || isLoadingData || isHydratingRef.current || !hydrationCompleteRef.current) return;
+    console.log('[app] local state changed -> pending changes flagged', {
+      userId: user.uid,
+      guard: {
+        hasLoadedData,
+        isLoadingData,
+        isHydrating: isHydratingRef.current,
+        hydrationComplete: hydrationCompleteRef.current,
+      },
+    });
     setHasPendingChanges(true);
   }, [transactions, bills, categories, shiftState, workDays, plannedWorkDates, monthlySalaryGoal, user, hasLoadedData, isLoadingData]);
 
   // 4. Save Data only when there are pending changes post-hydration
   useEffect(() => {
-    if (!user || isLoadingData || !hasLoadedData || !hasPendingChanges || isHydratingRef.current) return;
+    if (!user || isLoadingData || !hasLoadedData || !hasPendingChanges || isHydratingRef.current || !hydrationCompleteRef.current) return;
 
     const payload = {
       transactions,
@@ -287,6 +315,23 @@ function App() {
       plannedWorkDates,
       monthlySalaryGoal,
     };
+
+    console.log('[app] auto-save triggered', {
+      userId: user.uid,
+      summary: {
+        transactions: payload.transactions.length,
+        bills: payload.bills.length,
+        categories: payload.categories.length,
+        hasShiftState: Boolean(payload.shiftState),
+      },
+      guards: {
+        hasLoadedData,
+        isLoadingData,
+        hasPendingChanges,
+        isHydrating: isHydratingRef.current,
+        hydrationComplete: hydrationCompleteRef.current,
+      },
+    });
 
     saveAppData(payload, user.uid)
       .then(() => setHasPendingChanges(false))
