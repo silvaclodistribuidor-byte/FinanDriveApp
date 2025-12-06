@@ -123,6 +123,7 @@ const buildInitialAppState = () => ({
   workDays: [1, 2, 3, 4, 5, 6],
   plannedWorkDates: [],
   monthlySalaryGoal: 0,
+  openingBalances: {},
 });
 
 function App() {
@@ -142,6 +143,7 @@ function App() {
   const [workDays, setWorkDays] = useState<number[]>([1, 2, 3, 4, 5, 6]); // 0=Sun, 6=Sat (Generic Preference)
   const [plannedWorkDates, setPlannedWorkDates] = useState<string[]>([]); // Specific dates YYYY-MM-DD
   const [monthlySalaryGoal, setMonthlySalaryGoal] = useState<number>(0);
+  const [openingBalances, setOpeningBalances] = useState<Record<string, number>>({});
 
   // UI State
   const [isLoadingData, setIsLoadingData] = useState(false);
@@ -194,6 +196,7 @@ function App() {
       setWorkDays([1, 2, 3, 4, 5, 6]);
       setPlannedWorkDates([]);
       setMonthlySalaryGoal(0);
+      setOpeningBalances({});
       return;
     }
 
@@ -247,6 +250,7 @@ function App() {
           if (data.workDays) setWorkDays(data.workDays);
           if (data.plannedWorkDates) setPlannedWorkDates(data.plannedWorkDates);
           if (data.monthlySalaryGoal) setMonthlySalaryGoal(data.monthlySalaryGoal);
+          if (data.openingBalances) setOpeningBalances(data.openingBalances);
           if (data.shiftState) setShiftState(data.shiftState);
           else setShiftState(createInitialShiftState());
         } else {
@@ -259,6 +263,7 @@ function App() {
           setWorkDays(initial.workDays);
           setPlannedWorkDates(initial.plannedWorkDates);
           setMonthlySalaryGoal(initial.monthlySalaryGoal);
+          setOpeningBalances(initial.openingBalances);
 
           await createDriverDocIfMissing(initial, user.uid);
         }
@@ -309,7 +314,7 @@ function App() {
       },
     });
     setHasPendingChanges(true);
-  }, [transactions, bills, categories, shiftState, workDays, plannedWorkDates, monthlySalaryGoal, user, hasLoadedData, isLoadingData]);
+  }, [transactions, bills, categories, shiftState, workDays, plannedWorkDates, monthlySalaryGoal, openingBalances, user, hasLoadedData, isLoadingData]);
 
   // 4. Save Data only when there are pending changes post-hydration
   useEffect(() => {
@@ -323,6 +328,7 @@ function App() {
       workDays,
       plannedWorkDates,
       monthlySalaryGoal,
+      openingBalances,
     };
 
     console.log('[app] auto-save triggered', {
@@ -347,7 +353,7 @@ function App() {
       .catch((error) => {
         console.error("Erro ao salvar dados no Firestore:", error);
       });
-  }, [user, transactions, bills, categories, shiftState, isLoadingData, workDays, plannedWorkDates, monthlySalaryGoal, hasLoadedData, hasPendingChanges]);
+    }, [user, transactions, bills, categories, shiftState, isLoadingData, workDays, plannedWorkDates, monthlySalaryGoal, openingBalances, hasLoadedData, hasPendingChanges]);
 
   // Shift Timer
   useEffect(() => {
@@ -494,6 +500,8 @@ function App() {
     return new Intl.NumberFormat('pt-BR', { style: 'currency', currency: 'BRL' }).format(val);
   };
 
+  const currentMonthKey = useMemo(() => getTodayString().substring(0, 7), []);
+
   // --- SMART CALCULATIONS ---
   const stats = useMemo(() => {
     const todayStr = getTodayString();
@@ -515,11 +523,12 @@ function App() {
     const totalIncome = monthlyIncomeFromTransactions + effectiveShiftEarnings;
     const totalExpense = monthlyExpensesFromTransactions + activeShiftExpenses;
     const netProfit = totalIncome - totalExpense;
+    const monthlyNetProfit = monthlyIncomeFromTransactions - monthlyExpensesFromTransactions;
     const profitMargin = totalIncome > 0 ? (netProfit / totalIncome) * 100 : 0;
     
     // Monthly Vars
     const billsThisMonth = bills.filter(b => b.dueDate.startsWith(currentMonthPrefix));
-    const totalMonthlyExpenses = billsThisMonth.reduce((acc, b) => acc + b.amount, 0); 
+    const totalMonthlyExpenses = billsThisMonth.reduce((acc, b) => acc + b.amount, 0);
     const D = totalMonthlyExpenses;
 
     const savedIncomeThisMonth = monthlyIncomeFromTransactions;
@@ -602,9 +611,12 @@ function App() {
           : "Meta exata atingida!";
     }
 
-    const remainingForBills = Math.max(0, D - netProfit);
+    const openingBalanceForMonth = openingBalances[currentMonthPrefix] || 0;
+    const pendingBillsTotalMonth = billsThisMonth.filter(b => !b.isPaid).reduce((acc, b) => acc + b.amount, 0);
+    const cashForBills = openingBalanceForMonth + monthlyNetProfit;
+    const minimumForBills = Math.max(pendingBillsTotalMonth - cashForBills, 0);
     const remainingToMonthlyGoal = Math.max(0, S - F);
-    const billsCovered = remainingForBills === 0;
+    const billsCovered = minimumForBills === 0;
     const salaryGoalMet = S > 0 ? remainingToMonthlyGoal === 0 : false;
 
     let statusColor = "bg-emerald-600";
@@ -613,7 +625,7 @@ function App() {
 
     if (!billsCovered) {
       statusColor = "bg-rose-600";
-      statusMessage = `Faltam ${formatCurrency(remainingForBills, true)} para garantir as contas do mês!`;
+      statusMessage = `Faltam ${formatCurrency(minimumForBills, true)} para garantir as contas do mês!`;
     } else if (S > 0 && !salaryGoalMet) {
       statusColor = "bg-amber-500";
       statusMessage = `Contas cobertas. Faltam ${formatCurrency(remainingToMonthlyGoal, true)} para o salário.`;
@@ -621,20 +633,20 @@ function App() {
       statusMessage = "✅ Contas do mês garantidas com o lucro atual. Meta do mês atingida!";
     }
 
-    const pendingBillsTotal = bills.filter(b => !b.isPaid).reduce((acc, b) => acc + b.amount, 0);
+    const pendingBillsTotalAll = bills.filter(b => !b.isPaid).reduce((acc, b) => acc + b.amount, 0);
     const remainingPlannedDates = plannedWorkDates.filter(d => d.startsWith(currentMonthPrefix) && d >= todayStr).sort();
     const remainingDays = remainingPlannedDates.length;
 
     return { 
         totalIncome, totalExpense, netProfit, profitMargin,
         displayGoal, D, F, S, statusColor, statusMessage,
-        remainingForBills, remainingToMonthlyGoal,
+        minimumForBills, cashForBills, openingBalanceForMonth, monthlyNetProfit, pendingBillsTotalMonth, remainingToMonthlyGoal,
         dailyGoal, expenseTargetToday, salaryTargetToday, F_today, dailyStatusColor, dailyStatusMessage,
         remainingForToday, isGoalMet,
-        pendingBillsTotal, remainingDays,
+        pendingBillsTotalAll, remainingDays,
         totalExpensesThisMonth: totalExpense,
     };
-  }, [transactions, bills, plannedWorkDates, monthlySalaryGoal, shiftState]);
+  }, [transactions, bills, plannedWorkDates, monthlySalaryGoal, shiftState, openingBalances]);
 
   // ... (Other useMemos: billsSummary, filteredHistory, historySummary, pieData - Unchanged)
   const billsSummary = useMemo(() => ({
@@ -734,6 +746,10 @@ function App() {
   const toggleBillPaid = (id: string) => { setBills(prev => prev.map(b => (b.id === id ? { ...b, isPaid: !b.isPaid } : b))); };
   const handleDeleteBill = (id: string) => { setBills(prev => prev.filter(b => b.id !== id)); };
   const handleDeleteTransaction = (id: string) => { setTransactions(prev => prev.filter(t => t.id !== id)); };
+
+  const handleOpeningBalanceChange = (monthKey: string, value: number) => {
+    setOpeningBalances(prev => ({ ...prev, [monthKey]: value }));
+  };
 
   if (authLoading) return <div className="min-h-screen bg-slate-900 flex items-center justify-center text-white">Carregando FinanDrive...</div>;
 
@@ -929,7 +945,7 @@ function App() {
                 <div>
                   <h1 className="text-2xl font-bold text-slate-800">{activeTab === 'dashboard' ? 'Painel de Controle' : activeTab === 'reports' ? 'Relatórios de Ganhos' : activeTab === 'bills' ? 'Contas & Planejamento' : 'Histórico Completo'}</h1>
                   <p className="text-slate-500 text-sm flex items-center gap-1">
-                    {activeTab === 'dashboard' && stats.pendingBillsTotal > 0 ? <span className="text-rose-500 font-medium">Você tem {formatCurrency(stats.pendingBillsTotal)} em contas pendentes.</span> : <span>Gestão profissional para motoristas.</span>}
+                    {activeTab === 'dashboard' && stats.pendingBillsTotalAll > 0 ? <span className="text-rose-500 font-medium">Você tem {formatCurrency(stats.pendingBillsTotalAll)} em contas pendentes.</span> : <span>Gestão profissional para motoristas.</span>}
                   </p>
                 </div>
                 <button onClick={() => setShowValues(!showValues)} className="hidden md:flex p-2 text-slate-400 hover:text-indigo-600 bg-white hover:bg-slate-50 rounded-lg border border-slate-200 transition-colors" title={showValues ? 'Ocultar Valores' : 'Mostrar Valores'}>{showValues ? <Eye size={20} /> : <EyeOff size={20} />}</button>
@@ -1055,7 +1071,16 @@ function App() {
             )}
 
             {/* Reports Content */}
-            {activeTab === 'reports' && <ReportsTab transactions={transactions} showValues={showValues} />}
+            {activeTab === 'reports' && (
+              <ReportsTab
+                transactions={transactions}
+                bills={bills}
+                showValues={showValues}
+                currentMonthKey={currentMonthKey}
+                openingBalances={openingBalances}
+                onSaveOpeningBalance={handleOpeningBalanceChange}
+              />
+            )}
 
             {/* Bills Content */}
             {activeTab === 'bills' && (
