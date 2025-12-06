@@ -91,6 +91,7 @@ const INITIAL_BILLS: Bill[] = [];
 function App() {
   const [user, setUser] = useState<User | null>(null);
   const [authLoading, setAuthLoading] = useState(true);
+  const [hasLoadedData, setHasLoadedData] = useState(false);
 
   // App Data State
   const [transactions, setTransactions] = useState<Transaction[]>(INITIAL_TRANSACTIONS);
@@ -148,40 +149,50 @@ function App() {
   // 2. Carregar dados quando o usuário muda
   useEffect(() => {
     if (user) {
+      setHasLoadedData(false);
       setIsLoadingData(true);
-      loadAppData(user.uid).then((data) => {
-        if (data) {
-          if (data.transactions) setTransactions(data.transactions);
-          else setTransactions([]); // Novo usuário limpa dados antigos da memória
-          
-          if (data.bills) setBills(data.bills);
-          else setBills([]);
+      loadAppData(user.uid)
+        .then((data) => {
+          if (data) {
+            if (data.transactions) setTransactions(data.transactions);
+            else setTransactions([]); // Novo usuário limpa dados antigos da memória
 
-          if (data.categories) setCategories(data.categories);
+            if (data.bills) setBills(data.bills);
+            else setBills([]);
 
-          // Carrega estado do turno se existir
-          if (data.shiftState) setShiftState(data.shiftState);
-        } else {
-          // Usuário novo, zera tudo para não mostrar dados de cache
+            if (data.categories) setCategories(data.categories);
+
+            // Carrega estado do turno se existir
+            if (data.shiftState) setShiftState(data.shiftState);
+          } else {
+            // Usuário novo, zera tudo para não mostrar dados de cache
+            setTransactions([]);
+            setBills([]);
+            // Mantém shiftState padrão (zerado)
+          }
+        })
+        .catch((error) => {
+          console.error('Erro ao carregar dados do usuário:', error);
           setTransactions([]);
           setBills([]);
-          // Mantém shiftState padrão (zerado)
-        }
-        setIsLoadingData(false);
-      });
+        })
+        .finally(() => {
+          setHasLoadedData(true);
+          setIsLoadingData(false);
+        });
     }
   }, [user]);
 
   // 3. Salvar dados quando mudam (apenas se logado e não estiver carregando)
   useEffect(() => {
-    if (!user || isLoadingData) return;
-    
+    if (!user || isLoadingData || !hasLoadedData) return;
+
     // Inclui shiftState no payload
     const payload = { transactions, bills, categories, shiftState };
     saveAppData(payload, user.uid).catch((error) => {
       console.error("Erro ao salvar dados no Firestore:", error);
     });
-  }, [transactions, bills, categories, shiftState, user, isLoadingData]);
+  }, [transactions, bills, categories, shiftState, user, isLoadingData, hasLoadedData]);
 
   // Timer do Turno
   useEffect(() => {
