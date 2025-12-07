@@ -610,17 +610,22 @@ function App() {
     const expenseTransactionsThisMonth = transactions
       .filter(t => t.type === TransactionType.EXPENSE && t.date.startsWith(currentMonthPrefix));
 
+    // Filtramos as contas do mês antes de usá-las nos cálculos de despesas
+    const billsThisMonth = bills.filter(b => b.dueDate.startsWith(currentMonthPrefix));
+
     const monthlyIncomeFromTransactions = incomeTransactionsThisMonth.reduce((acc, curr) => acc + curr.amount, 0);
     const monthlyExpensesFromTransactions = expenseTransactionsThisMonth.reduce((acc, curr) => acc + curr.amount, 0);
+    const monthlyExpensesFromBillsPaid = billsThisMonth
+      .filter(b => b.isPaid)
+      .reduce((acc, b) => acc + b.amount, 0);
 
     const totalIncome = monthlyIncomeFromTransactions + effectiveShiftEarnings;
-    const totalExpense = monthlyExpensesFromTransactions + activeShiftExpenses;
+    const totalExpense = monthlyExpensesFromTransactions + monthlyExpensesFromBillsPaid + activeShiftExpenses;
     const netProfit = totalIncome - totalExpense;
-    const monthlyNetProfit = monthlyIncomeFromTransactions - monthlyExpensesFromTransactions;
+    const monthlyNetProfit = monthlyIncomeFromTransactions - (monthlyExpensesFromTransactions + monthlyExpensesFromBillsPaid);
     const profitMargin = totalIncome > 0 ? (netProfit / totalIncome) * 100 : 0;
     
     // Monthly Vars
-    const billsThisMonth = bills.filter(b => b.dueDate.startsWith(currentMonthPrefix));
     const totalMonthlyExpenses = billsThisMonth.reduce((acc, b) => acc + b.amount, 0);
     const D = totalMonthlyExpenses;
 
@@ -635,17 +640,16 @@ function App() {
       .reduce((acc, t) => acc + t.amount, 0);
     
     const F_today = savedIncomeToday + effectiveShiftEarnings;
-    
-    // Calculate Goal based on START OF DAY state
-    const F_start_of_day = Math.max(0, F - F_today);
 
-    // Monthly Status Calc
-    const salaryAccumulated = Math.max(0, F - D);
-    const salaryRemaining = (S > 0) ? Math.max(0, S - salaryAccumulated) : 0;
+    // Monthly Status Calc (salary progress always based on lucro líquido)
+    // A meta salarial deve avançar com o faturamento bruto do mês (incluindo ganhos do turno ativo),
+    // não apenas com o lucro líquido. Por isso usamos o faturado do mês (F) em vez do netProfit aqui.
+    const salaryAccumulated = Math.max(0, F);
+    const salaryRemaining = S > 0 ? Math.max(0, S - salaryAccumulated) : 0;
 
     // Daily Target Calc (Based on Start of Day)
-    const salaryAccumulatedStart = Math.max(0, F_start_of_day - D);
-    const salaryRemainingStart = (S > 0) ? Math.max(0, S - salaryAccumulatedStart) : 0;
+    const salaryAccumulatedStart = salaryAccumulated;
+    const salaryRemainingStart = salaryRemaining;
 
     const countWorkDays = (startStr: string, endStr: string) => {
       return plannedWorkDates.filter(d => d >= startStr && d <= endStr).length;
@@ -669,6 +673,8 @@ function App() {
       openingBalanceForMonth,
       netProfit,
     );
+
+    const cashOnHand = openingBalanceForMonth + netProfit;
 
     const daysRemainingForExpenses = Math.max(1, countWorkDays(todayStr, lastExpenseDate));
     const expenseTargetToday = minimumForBills > 0 ? minimumForBills / daysRemainingForExpenses : 0;
@@ -713,7 +719,7 @@ function App() {
           : "Meta exata atingida!";
     }
 
-    const remainingToMonthlyGoal = Math.max(0, S - F);
+    const remainingToMonthlyGoal = salaryRemaining;
     const billsCovered = minimumForBills === 0;
     const salaryGoalMet = S > 0 ? remainingToMonthlyGoal === 0 : false;
 
@@ -743,6 +749,7 @@ function App() {
         remainingForToday, isGoalMet,
         pendingBillsTotalAll, remainingDays,
         totalExpensesThisMonth: totalExpense,
+        cashOnHand,
     };
   }, [transactions, bills, plannedWorkDates, monthlySalaryGoal, shiftState, openingBalances]);
 
@@ -751,6 +758,14 @@ function App() {
     paid: bills.filter(b => b.isPaid).reduce((acc, b) => acc + b.amount, 0),
     pending: bills.filter(b => !b.isPaid).reduce((acc, b) => acc + b.amount, 0)
   }), [bills]);
+
+  const upcomingBills = useMemo(() => (
+    bills
+      .filter(b => !b.isPaid)
+      .slice()
+      .sort((a, b) => a.dueDate.localeCompare(b.dueDate))
+      .slice(0, 3)
+  ), [bills]);
 
   const filteredHistory = useMemo(() => {
     const today = new Date();
@@ -1131,7 +1146,10 @@ function App() {
                     colorClass="bg-slate-800"
                     trend={`${stats.profitMargin.toFixed(0)}% Margem`}
                     trendUp={stats.profitMargin > 30}
-                    extraInfo={`Despesas do mês: ${formatCurrency(stats.totalExpensesThisMonth)}`}
+                    extraInfoLines={[
+                      `Despesas do mês: ${formatCurrency(stats.totalExpensesThisMonth)}`,
+                      `Caixa atual: ${formatCurrency(stats.cashOnHand)}`,
+                    ]}
                   />
                 </div>
                 
@@ -1178,13 +1196,13 @@ function App() {
                     <div className="bg-white p-6 rounded-2xl shadow-sm border border-slate-200">
                       <div className="flex justify-between items-center mb-4"><h3 className="font-bold text-slate-800 text-sm">Próximos Pagamentos</h3><button onClick={() => setActiveTab('bills')} className="text-indigo-600 text-xs hover:underline">Ver tudo</button></div>
                       <div className="space-y-3">
-                        {bills.filter(b => !b.isPaid).slice(0, 3).map(bill => (
+                        {upcomingBills.map(bill => (
                           <div key={bill.id} className="flex justify-between items-center p-3 bg-slate-50 rounded-lg border border-slate-100">
                             <div><p className="text-sm font-semibold text-slate-700">{bill.description}</p><p className="text-xs text-rose-500 font-medium">Vence: {formatDateBr(bill.dueDate)}</p></div>
                             <span className="text-sm font-bold text-slate-800">{formatCurrency(bill.amount)}</span>
                           </div>
                         ))}
-                        {bills.filter(b => !b.isPaid).length === 0 && <p className="text-center text-xs text-slate-400 py-4">Tudo pago! 🎉</p>}
+                        {upcomingBills.length === 0 && <p className="text-center text-xs text-slate-400 py-4">Tudo pago! 🎉</p>}
                       </div>
                     </div>
                   </div>

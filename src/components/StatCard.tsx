@@ -9,9 +9,10 @@ interface StatCardProps {
   trend?: string;
   trendUp?: boolean;
   extraInfo?: string;
+  extraInfoLines?: string[];
 }
 
-export const StatCard: React.FC<StatCardProps> = ({ title, value, icon: Icon, colorClass, trend, trendUp, extraInfo }) => {
+export const StatCard: React.FC<StatCardProps> = ({ title, value, icon: Icon, colorClass, trend, trendUp, extraInfo, extraInfoLines }) => {
   return (
     <div className={`${colorClass} rounded-xl p-5 text-white shadow-lg relative overflow-hidden group`}>
       <div className="absolute top-0 right-0 p-4 opacity-10 group-hover:opacity-20 transition-opacity">
@@ -32,6 +33,11 @@ export const StatCard: React.FC<StatCardProps> = ({ title, value, icon: Icon, co
             {extraInfo}
           </p>
         )}
+        {extraInfoLines?.map((line, idx) => (
+          <p key={idx} className="text-xs text-slate-200/80 mt-1 font-medium">
+            {line}
+          </p>
+        ))}
       </div>
     </div>
   );
