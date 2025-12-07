@@ -44,7 +44,6 @@ import { BillModal } from './components/BillModal';
 import { SettingsModal } from './components/SettingsModal';
 import { ReportsTab } from './components/ReportsTab';
 import { Login } from './components/Login';
-import { formatCurrencyInputMask, parseCurrencyInputToNumber, formatCurrencyPtBr } from './utils/currency';
 import {
   loadAppData,
   saveAppData,
@@ -124,18 +123,7 @@ const buildInitialAppState = () => ({
   workDays: [1, 2, 3, 4, 5, 6],
   plannedWorkDates: [],
   monthlySalaryGoal: 0,
-  openingBalances: {},
 });
-
-const computeMinimumForBills = (
-  pending: number,
-  openingBalance: number,
-  monthlyNet: number,
-) => {
-  const cashForBills = openingBalance + monthlyNet;
-  const minimumForBills = Math.max(pending - cashForBills, 0);
-  return { cashForBills, minimumForBills };
-};
 
 function App() {
   const [user, setUser] = useState<User | null>(null);
@@ -210,7 +198,6 @@ function App() {
       setWorkDays([1, 2, 3, 4, 5, 6]);
       setPlannedWorkDates([]);
       setMonthlySalaryGoal(0);
-      setOpeningBalances({});
       return;
     }
 
@@ -264,7 +251,6 @@ function App() {
           if (data.workDays) setWorkDays(data.workDays);
           if (data.plannedWorkDates) setPlannedWorkDates(data.plannedWorkDates);
           if (data.monthlySalaryGoal) setMonthlySalaryGoal(data.monthlySalaryGoal);
-          if (data.openingBalances) setOpeningBalances(data.openingBalances);
           if (data.shiftState) setShiftState(data.shiftState);
           else setShiftState(createInitialShiftState());
         } else {
@@ -277,7 +263,6 @@ function App() {
           setWorkDays(initial.workDays);
           setPlannedWorkDates(initial.plannedWorkDates);
           setMonthlySalaryGoal(initial.monthlySalaryGoal);
-          setOpeningBalances(initial.openingBalances);
 
           await createDriverDocIfMissing(initial, user.uid);
         }
@@ -328,7 +313,7 @@ function App() {
       },
     });
     setHasPendingChanges(true);
-  }, [transactions, bills, categories, shiftState, workDays, plannedWorkDates, monthlySalaryGoal, openingBalances, user, hasLoadedData, isLoadingData]);
+  }, [transactions, bills, categories, shiftState, workDays, plannedWorkDates, monthlySalaryGoal, user, hasLoadedData, isLoadingData]);
 
   // 4. Save Data only when there are pending changes post-hydration
   useEffect(() => {
@@ -342,7 +327,6 @@ function App() {
       workDays,
       plannedWorkDates,
       monthlySalaryGoal,
-      openingBalances,
     };
 
     console.log('[app] auto-save triggered', {
@@ -367,7 +351,7 @@ function App() {
       .catch((error) => {
         console.error("Erro ao salvar dados no Firestore:", error);
       });
-    }, [user, transactions, bills, categories, shiftState, isLoadingData, workDays, plannedWorkDates, monthlySalaryGoal, openingBalances, hasLoadedData, hasPendingChanges]);
+  }, [user, transactions, bills, categories, shiftState, isLoadingData, workDays, plannedWorkDates, monthlySalaryGoal, hasLoadedData, hasPendingChanges]);
 
   // Shift Timer
   useEffect(() => {
@@ -471,8 +455,6 @@ function App() {
     setBills(INITIAL_BILLS);
     setCategories(DEFAULT_CATEGORIES);
     setShiftState(createInitialShiftState());
-    shiftStartRef.current = null;
-    elapsedBaseRef.current = 0;
     setWorkDays([1, 2, 3, 4, 5, 6]);
     setPlannedWorkDates([]);
     setMonthlySalaryGoal(0);
