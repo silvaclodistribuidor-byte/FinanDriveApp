@@ -127,6 +127,16 @@ const buildInitialAppState = () => ({
   openingBalances: {},
 });
 
+const computeMinimumForBills = (
+  pending: number,
+  openingBalance: number,
+  monthlyNet: number,
+) => {
+  const cashForBills = openingBalance + monthlyNet;
+  const minimumForBills = Math.max(pending - cashForBills, 0);
+  return { cashForBills, minimumForBills };
+};
+
 function App() {
   const [user, setUser] = useState<User | null>(null);
   const [authLoading, setAuthLoading] = useState(true);
@@ -661,16 +671,6 @@ function App() {
     if (lastExpenseDate < todayStr) lastExpenseDate = todayStr;
 
     const pendingBillsTotalMonth = unpaidBillsThisMonth.reduce((acc, b) => acc + b.amount, 0);
-    const computeMinimumForBills = (
-      pending: number,
-      openingBalance: number,
-      monthlyNet: number,
-    ) => {
-      const cashForBills = openingBalance + monthlyNet;
-      const minimumForBills = Math.max(pending - cashForBills, 0);
-      return { cashForBills, minimumForBills };
-    };
-
     const openingBalanceForMonth = openingBalances[currentMonthPrefix] || 0;
     // Bill coverage: use monthly net profit (including current shift earnings/expenses) plus the opening balance
     const { cashForBills, minimumForBills } = computeMinimumForBills(
