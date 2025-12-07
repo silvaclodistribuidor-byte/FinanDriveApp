@@ -635,17 +635,14 @@ function App() {
       .reduce((acc, t) => acc + t.amount, 0);
     
     const F_today = savedIncomeToday + effectiveShiftEarnings;
-    
-    // Calculate Goal based on START OF DAY state
-    const F_start_of_day = Math.max(0, F - F_today);
 
-    // Monthly Status Calc
-    const salaryAccumulated = Math.max(0, F - D);
-    const salaryRemaining = (S > 0) ? Math.max(0, S - salaryAccumulated) : 0;
+    // Monthly Status Calc (salary progress always based on lucro líquido)
+    const salaryAccumulated = Math.max(0, netProfit);
+    const salaryRemaining = S > 0 ? Math.max(0, S - salaryAccumulated) : 0;
 
     // Daily Target Calc (Based on Start of Day)
-    const salaryAccumulatedStart = Math.max(0, F_start_of_day - D);
-    const salaryRemainingStart = (S > 0) ? Math.max(0, S - salaryAccumulatedStart) : 0;
+    const salaryAccumulatedStart = salaryAccumulated;
+    const salaryRemainingStart = salaryRemaining;
 
     const countWorkDays = (startStr: string, endStr: string) => {
       return plannedWorkDates.filter(d => d >= startStr && d <= endStr).length;
@@ -715,7 +712,7 @@ function App() {
           : "Meta exata atingida!";
     }
 
-    const remainingToMonthlyGoal = Math.max(0, S - F);
+    const remainingToMonthlyGoal = salaryRemaining;
     const billsCovered = minimumForBills === 0;
     const salaryGoalMet = S > 0 ? remainingToMonthlyGoal === 0 : false;
 
