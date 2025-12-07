@@ -637,7 +637,9 @@ function App() {
     const F_today = savedIncomeToday + effectiveShiftEarnings;
 
     // Monthly Status Calc (salary progress always based on lucro líquido)
-    const salaryAccumulated = Math.max(0, netProfit);
+    // A meta salarial deve avançar com o faturamento bruto do mês (incluindo ganhos do turno ativo),
+    // não apenas com o lucro líquido. Por isso usamos o faturado do mês (F) em vez do netProfit aqui.
+    const salaryAccumulated = Math.max(0, F);
     const salaryRemaining = S > 0 ? Math.max(0, S - salaryAccumulated) : 0;
 
     // Daily Target Calc (Based on Start of Day)
