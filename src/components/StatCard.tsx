@@ -8,9 +8,10 @@ interface StatCardProps {
   colorClass: string;
   trend?: string;
   trendUp?: boolean;
+  extraInfo?: string;
 }
 
-export const StatCard: React.FC<StatCardProps> = ({ title, value, icon: Icon, colorClass, trend, trendUp }) => {
+export const StatCard: React.FC<StatCardProps> = ({ title, value, icon: Icon, colorClass, trend, trendUp, extraInfo }) => {
   return (
     <div className={`${colorClass} rounded-xl p-5 text-white shadow-lg relative overflow-hidden group`}>
       <div className="absolute top-0 right-0 p-4 opacity-10 group-hover:opacity-20 transition-opacity">
@@ -24,6 +25,11 @@ export const StatCard: React.FC<StatCardProps> = ({ title, value, icon: Icon, co
         {trend && (
           <p className={`text-xs font-bold mt-1 ${trendUp ? 'text-emerald-300' : 'text-rose-300'}`}>
             {trend}
+          </p>
+        )}
+        {extraInfo && (
+          <p className="text-xs text-slate-200/80 mt-1 font-medium">
+            {extraInfo}
           </p>
         )}
       </div>
