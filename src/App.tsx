@@ -610,6 +610,9 @@ function App() {
     const expenseTransactionsThisMonth = transactions
       .filter(t => t.type === TransactionType.EXPENSE && t.date.startsWith(currentMonthPrefix));
 
+    // Filtramos as contas do mês antes de usá-las nos cálculos de despesas
+    const billsThisMonth = bills.filter(b => b.dueDate.startsWith(currentMonthPrefix));
+
     const monthlyIncomeFromTransactions = incomeTransactionsThisMonth.reduce((acc, curr) => acc + curr.amount, 0);
     const monthlyExpensesFromTransactions = expenseTransactionsThisMonth.reduce((acc, curr) => acc + curr.amount, 0);
     const monthlyExpensesFromBillsPaid = billsThisMonth
@@ -623,7 +626,6 @@ function App() {
     const profitMargin = totalIncome > 0 ? (netProfit / totalIncome) * 100 : 0;
     
     // Monthly Vars
-    const billsThisMonth = bills.filter(b => b.dueDate.startsWith(currentMonthPrefix));
     const totalMonthlyExpenses = billsThisMonth.reduce((acc, b) => acc + b.amount, 0);
     const D = totalMonthlyExpenses;
 
