@@ -612,11 +612,14 @@ function App() {
 
     const monthlyIncomeFromTransactions = incomeTransactionsThisMonth.reduce((acc, curr) => acc + curr.amount, 0);
     const monthlyExpensesFromTransactions = expenseTransactionsThisMonth.reduce((acc, curr) => acc + curr.amount, 0);
+    const monthlyExpensesFromBillsPaid = billsThisMonth
+      .filter(b => b.isPaid)
+      .reduce((acc, b) => acc + b.amount, 0);
 
     const totalIncome = monthlyIncomeFromTransactions + effectiveShiftEarnings;
-    const totalExpense = monthlyExpensesFromTransactions + activeShiftExpenses;
+    const totalExpense = monthlyExpensesFromTransactions + monthlyExpensesFromBillsPaid + activeShiftExpenses;
     const netProfit = totalIncome - totalExpense;
-    const monthlyNetProfit = monthlyIncomeFromTransactions - monthlyExpensesFromTransactions;
+    const monthlyNetProfit = monthlyIncomeFromTransactions - (monthlyExpensesFromTransactions + monthlyExpensesFromBillsPaid);
     const profitMargin = totalIncome > 0 ? (netProfit / totalIncome) * 100 : 0;
     
     // Monthly Vars
