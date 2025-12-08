@@ -602,8 +602,10 @@ function App() {
     
     // Shift & Basic Income
     const currentShiftEarnings = shiftState.earnings.uber + shiftState.earnings.n99 + shiftState.earnings.indrive + shiftState.earnings.private;
-    const effectiveShiftEarnings = shiftState.isActive ? currentShiftEarnings : 0;
-    const activeShiftExpenses = shiftState.isActive ? shiftState.expenses : 0;
+    // Consideramos os ganhos e gastos do turno atual mesmo se ele estiver pausado ou já finalizado,
+    // para que o mínimo diário de contas seja abatido integralmente pelos valores lançados hoje.
+    const effectiveShiftEarnings = currentShiftEarnings;
+    const activeShiftExpenses = shiftState.expenses;
 
     const incomeTransactionsThisMonth = transactions
       .filter(t => t.type === TransactionType.INCOME && t.date.startsWith(currentMonthPrefix));
