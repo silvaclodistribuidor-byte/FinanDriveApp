@@ -9,9 +9,12 @@ import { getAuth } from 'firebase/auth';
 // Pegue em: Configurações do projeto → Seus apps → Web.
 export const firebaseConfig = {
   apiKey: "AIzaSyCs9k3dtWeUnpwj_mwTviGTr_K-GhtJA_A",
-  authDomain: "finandriveapp.firebaseapp.com", 
+  authDomain: "finandriveapp.firebaseapp.com",
   projectId: "finandriveapp",
-  storageBucket: "finandriveapp.firebasestorage.app",
+  // O bucket correto do Firebase Storage termina com "appspot.com".
+  // Se estiver usando ".firebasestorage.app", o app inicializa mas o Storage/Firestore
+  // falha ao autorizar gravações porque o projeto não bate com o bucket.
+  storageBucket: "finandriveapp.appspot.com",
   messagingSenderId: "877667982188",
   appId: "1:877667982188:web:e42cb3d73ae04e53393149"
 };
