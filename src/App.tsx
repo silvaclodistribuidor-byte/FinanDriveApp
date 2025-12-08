@@ -602,10 +602,14 @@ function App() {
     
     // Shift & Basic Income
     const currentShiftEarnings = shiftState.earnings.uber + shiftState.earnings.n99 + shiftState.earnings.indrive + shiftState.earnings.private;
-    // Consideramos os ganhos e gastos do turno atual mesmo se ele estiver pausado ou já finalizado,
-    // para que o mínimo diário de contas seja abatido integralmente pelos valores lançados hoje.
-    const effectiveShiftEarnings = currentShiftEarnings;
     const activeShiftExpenses = shiftState.expenses;
+
+    // Enquanto o turno está ativo ou pausado, o painel de controle não deve incorporar os números do turno
+    // nos cálculos financeiros; somente após o encerramento (quando o turno for salvo) os lançamentos serão
+    // enviados ao financeiro. A aba de Turno continua usando os valores do turno em andamento.
+    const shiftClosedForFinance = !(shiftState.isActive || shiftState.isPaused || isShiftModalOpen);
+    const effectiveShiftEarningsFinance = shiftClosedForFinance ? currentShiftEarnings : 0;
+    const effectiveShiftExpensesFinance = shiftClosedForFinance ? activeShiftExpenses : 0;
 
     const incomeTransactionsThisMonth = transactions
       .filter(t => t.type === TransactionType.INCOME && t.date.startsWith(currentMonthPrefix));
@@ -621,11 +625,18 @@ function App() {
       .filter(b => b.isPaid)
       .reduce((acc, b) => acc + b.amount, 0);
 
-    const totalIncome = monthlyIncomeFromTransactions + effectiveShiftEarnings;
-    const totalExpense = monthlyExpensesFromTransactions + monthlyExpensesFromBillsPaid + activeShiftExpenses;
-    const netProfit = totalIncome - totalExpense;
+    // Painel de controle (financeiro) usa apenas lançamentos fechados + turno encerrado
+    const totalIncomeFinance = monthlyIncomeFromTransactions + effectiveShiftEarningsFinance;
+    const totalExpenseFinance = monthlyExpensesFromTransactions + monthlyExpensesFromBillsPaid + effectiveShiftExpensesFinance;
+    const netProfitFinance = totalIncomeFinance - totalExpenseFinance;
+
+    // Aba de turno considera o turno em andamento
+    const totalIncomeShift = monthlyIncomeFromTransactions + currentShiftEarnings;
+    const totalExpenseShift = monthlyExpensesFromTransactions + monthlyExpensesFromBillsPaid + activeShiftExpenses;
+    const netProfitShift = totalIncomeShift - totalExpenseShift;
+
     const monthlyNetProfit = monthlyIncomeFromTransactions - (monthlyExpensesFromTransactions + monthlyExpensesFromBillsPaid);
-    const profitMargin = totalIncome > 0 ? (netProfit / totalIncome) * 100 : 0;
+    const profitMargin = totalIncomeFinance > 0 ? (netProfitFinance / totalIncomeFinance) * 100 : 0;
     
     // Monthly Vars
     const totalMonthlyExpenses = billsThisMonth.reduce((acc, b) => acc + b.amount, 0);
@@ -633,7 +644,7 @@ function App() {
 
     const savedIncomeThisMonth = monthlyIncomeFromTransactions;
 
-    const F = savedIncomeThisMonth + effectiveShiftEarnings;
+    const F = savedIncomeThisMonth + effectiveShiftEarningsFinance;
     const S = monthlySalaryGoal || 0;
 
     // Daily Logic (STABLE GOAL)
@@ -641,7 +652,8 @@ function App() {
       .filter(t => t.type === TransactionType.INCOME && t.date === todayStr)
       .reduce((acc, t) => acc + t.amount, 0);
     
-    const F_today = savedIncomeToday + effectiveShiftEarnings;
+    // Para metas do turno, o faturamento do dia inclui o turno em andamento
+    const F_today = savedIncomeToday + currentShiftEarnings;
 
     // Monthly Status Calc (progress bar usa faturamento bruto + ganhos do turno ativo)
     const salaryAccumulatedForProgress = Math.max(0, F);
@@ -668,16 +680,24 @@ function App() {
     const pendingBillsTotalMonth = unpaidBillsThisMonth.reduce((acc, b) => acc + b.amount, 0);
     const openingBalanceForMonth = openingBalances[currentMonthPrefix] || 0;
     // Bill coverage: use monthly net profit (including current shift earnings/expenses) plus the opening balance
-    const { cashForBills, minimumForBills } = computeMinimumForBills(
+    // Cobertura de contas para o painel (financeiro) — ignora turno em andamento
+    const { cashForBills: cashForBillsDashboard, minimumForBills: minimumForBillsDashboard } = computeMinimumForBills(
       pendingBillsTotalMonth,
       openingBalanceForMonth,
-      netProfit,
+      netProfitFinance,
     );
 
-    const cashOnHand = openingBalanceForMonth + netProfit;
+    // Cobertura de contas para a aba de turno — considera o turno atual
+    const { cashForBills: cashForBillsShift, minimumForBills: minimumForBillsShift } = computeMinimumForBills(
+      pendingBillsTotalMonth,
+      openingBalanceForMonth,
+      netProfitShift,
+    );
+
+    const cashOnHand = openingBalanceForMonth + netProfitFinance;
 
     const daysRemainingForExpenses = Math.max(1, countWorkDays(todayStr, lastExpenseDate));
-    const expenseTargetBase = minimumForBills > 0 ? minimumForBills / daysRemainingForExpenses : 0;
+    const expenseTargetBase = minimumForBillsShift > 0 ? minimumForBillsShift / daysRemainingForExpenses : 0;
     // Ajuste: o mínimo diário de contas deve refletir imediatamente o faturamento do dia.
     const expenseTargetToday = Math.max(0, expenseTargetBase - F_today);
 
@@ -703,10 +723,10 @@ function App() {
     let dailyStatusMessage = "Parabéns! Você bateu a meta de hoje.";
 
     if (!isGoalMet) {
-      if (minimumForBills > 0 && F_today < expenseTargetToday) {
+      if (minimumForBillsShift > 0 && F_today < expenseTargetToday) {
         dailyStatusColor = "bg-rose-600";
         dailyStatusMessage = "Atenção: Mínimo para contas ainda não atingido.";
-      } else if (minimumForBills === 0 && salaryRemainingStart > 0) {
+      } else if (minimumForBillsShift === 0 && salaryRemainingStart > 0) {
         dailyStatusColor = "bg-amber-500";
         dailyStatusMessage = "Contas garantidas! Foque na meta salarial.";
       } else {
@@ -722,7 +742,7 @@ function App() {
     }
 
     const remainingToMonthlyGoal = salaryRemainingForProgress;
-    const billsCovered = minimumForBills === 0;
+    const billsCovered = minimumForBillsDashboard === 0;
     const salaryGoalMet = S > 0 ? remainingToMonthlyGoal === 0 : false;
 
     let statusColor = "bg-emerald-600";
@@ -731,7 +751,7 @@ function App() {
 
     if (!billsCovered) {
       statusColor = "bg-rose-600";
-      statusMessage = `Faltam ${formatCurrency(minimumForBills, true)} para garantir as contas do mês!`;
+      statusMessage = `Faltam ${formatCurrency(minimumForBillsDashboard, true)} para garantir as contas do mês!`;
     } else if (S > 0 && !salaryGoalMet) {
       statusColor = "bg-amber-500";
       statusMessage = `Contas cobertas. Faltam ${formatCurrency(remainingToMonthlyGoal, true)} para o salário.`;
@@ -744,16 +764,23 @@ function App() {
     const remainingDays = remainingPlannedDates.length;
 
     return { 
-        totalIncome, totalExpense, netProfit, profitMargin,
+        totalIncome: totalIncomeFinance,
+        totalExpense: totalExpenseFinance,
+        netProfit: netProfitFinance,
+        profitMargin,
         displayGoal, D, F, S, statusColor, statusMessage,
-        minimumForBills, cashForBills, openingBalanceForMonth, monthlyNetProfit, pendingBillsTotalMonth, remainingToMonthlyGoal,
+        minimumForBills: minimumForBillsDashboard,
+        cashForBills: cashForBillsDashboard,
+        minimumForBillsShift,
+        cashForBillsShift,
+        openingBalanceForMonth, monthlyNetProfit, pendingBillsTotalMonth, remainingToMonthlyGoal,
         dailyGoal, expenseTargetToday, salaryTargetToday, F_today, dailyStatusColor, dailyStatusMessage,
         remainingForToday, isGoalMet,
         pendingBillsTotalAll, remainingDays,
-        totalExpensesThisMonth: totalExpense,
+        totalExpensesThisMonth: totalExpenseFinance,
         cashOnHand,
     };
-  }, [transactions, bills, plannedWorkDates, monthlySalaryGoal, shiftState, openingBalances]);
+  }, [transactions, bills, plannedWorkDates, monthlySalaryGoal, shiftState, openingBalances, isShiftModalOpen]);
 
   // ... (Other useMemos: billsSummary, filteredHistory, historySummary, pieData - Unchanged)
   const billsSummary = useMemo(() => ({
