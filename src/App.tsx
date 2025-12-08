@@ -675,7 +675,9 @@ function App() {
     const cashOnHand = openingBalanceForMonth + netProfit;
 
     const daysRemainingForExpenses = Math.max(1, countWorkDays(todayStr, lastExpenseDate));
-    const expenseTargetToday = minimumForBills > 0 ? minimumForBills / daysRemainingForExpenses : 0;
+    const expenseTargetBase = minimumForBills > 0 ? minimumForBills / daysRemainingForExpenses : 0;
+    // Ajuste: o mínimo diário de contas deve refletir imediatamente o faturamento do dia.
+    const expenseTargetToday = Math.max(0, expenseTargetBase - F_today);
 
     const endOfMonth = new Date(new Date().getFullYear(), new Date().getMonth() + 1, 0);
     const endOfMonthStr = [endOfMonth.getFullYear(), String(endOfMonth.getMonth() + 1).padStart(2,'0'), String(endOfMonth.getDate()).padStart(2,'0')].join('-');
