@@ -175,6 +175,13 @@ function App() {
   const shiftStartRef = useRef<number | null>(null);
   const elapsedBaseRef = useRef<number>(0);
 
+  const clearShiftTimer = () => {
+    if (timerRef.current) {
+      clearInterval(timerRef.current);
+      timerRef.current = null;
+    }
+  };
+
   // 1. Monitor Authentication
   useEffect(() => {
     const unsubscribe = onAuthStateChanged(auth as any, (firebaseUser) => {
@@ -360,72 +367,50 @@ function App() {
       });
     }, [user, transactions, bills, categories, shiftState, isLoadingData, workDays, plannedWorkDates, monthlySalaryGoal, openingBalances, hasLoadedData, hasPendingChanges]);
 
-  // Shift Timer
+  // Shift Timer (cronômetro simplificado)
   useEffect(() => {
-    if (shiftState.isActive && !shiftState.isPaused) {
-      if (!shiftStartRef.current) {
-        const elapsedFromStart = shiftState.startTime
-          ? Math.max(0, Math.floor((Date.now() - shiftState.startTime) / 1000))
-          : 0;
-        const normalizedElapsed = Math.max(shiftState.elapsedSeconds, elapsedFromStart);
-        elapsedBaseRef.current = normalizedElapsed;
-        shiftStartRef.current = Date.now();
-        if (normalizedElapsed !== shiftState.elapsedSeconds) {
-          setShiftState(prev => ({ ...prev, elapsedSeconds: normalizedElapsed }));
-        }
-      } else {
-        elapsedBaseRef.current = shiftState.elapsedSeconds;
-      }
-
-      const intervalId = window.setInterval(() => {
-        const base = elapsedBaseRef.current;
-        const startTs = shiftStartRef.current ?? Date.now();
-        const elapsedSinceStart = Math.max(0, Math.floor((Date.now() - startTs) / 1000));
-        const nextElapsed = base + elapsedSinceStart;
-        setShiftState(prev => ({ ...prev, elapsedSeconds: nextElapsed }));
-      }, 1000);
-
-      timerRef.current = intervalId;
-      return () => {
-        clearInterval(intervalId);
-        timerRef.current = null;
-      };
-    }
-
-    if (timerRef.current) {
-      clearInterval(timerRef.current);
-      timerRef.current = null;
-    }
-
-    if (shiftState.isActive && shiftState.isPaused) {
-      shiftStartRef.current = null;
-      elapsedBaseRef.current = shiftState.elapsedSeconds;
-    } else {
+    if (!shiftState.isActive) {
+      clearShiftTimer();
       shiftStartRef.current = null;
       elapsedBaseRef.current = 0;
+      return;
     }
-  }, [shiftState.isActive, shiftState.isPaused, shiftState.startTime]);
 
-  // Normalize elapsed seconds after hydration when a shift is active
-  useEffect(() => {
-    if (!shiftState.isActive) return;
-    const elapsedFromStart = shiftState.startTime
-      ? Math.max(0, Math.floor((Date.now() - shiftState.startTime) / 1000))
-      : shiftState.elapsedSeconds;
-    const normalizedElapsed = Math.max(shiftState.elapsedSeconds, elapsedFromStart);
-    if (normalizedElapsed !== shiftState.elapsedSeconds) {
-      setShiftState(prev => ({ ...prev, elapsedSeconds: normalizedElapsed }));
-    }
-    elapsedBaseRef.current = normalizedElapsed;
-    shiftStartRef.current = shiftState.isPaused ? null : Date.now();
-  }, [shiftState.isActive]);
-
-  useEffect(() => {
-    if (!shiftState.isActive) return;
     if (shiftState.isPaused) {
+      clearShiftTimer();
+      shiftStartRef.current = null;
+      elapsedBaseRef.current = shiftState.elapsedSeconds;
+      return;
+    }
+
+    // Ativo e rodando
+    clearShiftTimer();
+    const baselineStart = shiftState.startTime ?? Date.now();
+    const deltaFromStart = Math.max(0, Math.floor((Date.now() - baselineStart) / 1000));
+    const normalizedElapsed = Math.max(shiftState.elapsedSeconds, elapsedBaseRef.current + deltaFromStart);
+
+    if (normalizedElapsed !== shiftState.elapsedSeconds) {
+      elapsedBaseRef.current = normalizedElapsed;
+      setShiftState(prev => ({ ...prev, elapsedSeconds: normalizedElapsed }));
+    } else {
       elapsedBaseRef.current = shiftState.elapsedSeconds;
     }
-  }, [shiftState.elapsedSeconds, shiftState.isPaused, shiftState.isActive]);
+
+    shiftStartRef.current = Date.now();
+
+    const intervalId = window.setInterval(() => {
+      if (!shiftStartRef.current) return;
+      const elapsedSinceResume = Math.max(0, Math.floor((Date.now() - shiftStartRef.current) / 1000));
+      const nextElapsed = elapsedBaseRef.current + elapsedSinceResume;
+      setShiftState(prev => ({ ...prev, elapsedSeconds: nextElapsed }));
+    }, 1000);
+
+    timerRef.current = intervalId;
+
+    return () => {
+      clearShiftTimer();
+    };
+  }, [shiftState.isActive, shiftState.isPaused, shiftState.startTime]);
 
   // Initial Check: Populate planned dates if empty
   useEffect(() => {
@@ -536,6 +521,7 @@ function App() {
     setShiftState(prev => {
       if (!prev.isActive) return prev;
 
+      // Retomar
       if (prev.isPaused) {
         const resumeNow = Date.now();
         shiftStartRef.current = resumeNow;
@@ -543,19 +529,34 @@ function App() {
         return { ...prev, isPaused: false, startTime: resumeNow };
       }
 
+      // Pausar
       const startTs = shiftStartRef.current ?? prev.startTime ?? Date.now();
       const elapsedSinceStart = Math.max(0, Math.floor((Date.now() - startTs) / 1000));
       const updatedElapsed = prev.elapsedSeconds + elapsedSinceStart;
       elapsedBaseRef.current = updatedElapsed;
       shiftStartRef.current = null;
+      clearShiftTimer();
       return { ...prev, isPaused: true, elapsedSeconds: updatedElapsed };
     });
   };
 
   const handleStopShift = () => {
+    clearShiftTimer();
+    const finalizeElapsed = (prev: ShiftState) => {
+      if (!prev.isActive || prev.isPaused) return prev.elapsedSeconds;
+      const startTs = shiftStartRef.current ?? prev.startTime ?? Date.now();
+      const elapsedSinceStart = Math.max(0, Math.floor((Date.now() - startTs) / 1000));
+      return prev.elapsedSeconds + elapsedSinceStart;
+    };
+
+    setShiftState(prev => ({
+      ...prev,
+      isPaused: true,
+      elapsedSeconds: finalizeElapsed(prev),
+    }));
+
     shiftStartRef.current = null;
     elapsedBaseRef.current = 0;
-    setShiftState(prev => ({ ...prev, isPaused: true }));
     setIsShiftModalOpen(true);
   };
 
@@ -564,16 +565,19 @@ function App() {
     const currentStart = shiftState.startTime ? new Date(shiftState.startTime) : new Date();
     const defaultTime = `${String(currentStart.getHours()).padStart(2, '0')}:${String(currentStart.getMinutes()).padStart(2, '0')}`;
     const newTimeStr = window.prompt("Ajustar horário de início (HH:mm):", defaultTime);
-    
+
     if (newTimeStr && /^\d{2}:\d{2}$/.test(newTimeStr)) {
       const [h, m] = newTimeStr.split(':').map(Number);
       const newStartDate = new Date();
       newStartDate.setHours(h, m, 0, 0);
-      const newElapsed = Math.floor((Date.now() - newStartDate.getTime()) / 1000);
+      const recalculatedElapsed = Math.max(0, Math.floor((Date.now() - newStartDate.getTime()) / 1000));
+      elapsedBaseRef.current = recalculatedElapsed;
+      shiftStartRef.current = shiftState.isPaused ? null : Date.now();
+
       setShiftState(prev => ({
         ...prev,
         startTime: newStartDate.getTime(),
-        elapsedSeconds: Math.max(0, newElapsed)
+        elapsedSeconds: recalculatedElapsed
       }));
     }
   };
