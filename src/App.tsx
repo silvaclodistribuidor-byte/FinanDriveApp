@@ -574,7 +574,9 @@ function App() {
       const newStartDate = new Date();
       newStartDate.setHours(h, m, 0, 0);
       const recalculatedElapsed = Math.max(0, Math.floor((Date.now() - newStartDate.getTime()) / 1000));
-      elapsedBaseRef.current = recalculatedElapsed;
+      // Mantemos a base zerada para evitar somar duas vezes o intervalo recém calculado;
+      // o efeito do cronômetro normalizará a contagem a partir desse novo start.
+      elapsedBaseRef.current = 0;
       shiftStartRef.current = shiftState.isPaused ? null : Date.now();
 
       setShiftState(prev => ({
