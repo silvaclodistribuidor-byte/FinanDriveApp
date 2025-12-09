@@ -694,18 +694,27 @@ function App() {
       netProfitShift,
     );
 
+    // Mantemos o alvo diário de contas estável (sem os ganhos do turno em andamento),
+    // mas exibimos o valor faltante para contas já descontando o turno atual em uma célula dedicada.
+    const { minimumForBills: minimumForBillsShiftFrozen } = computeMinimumForBills(
+      pendingBillsTotalMonth,
+      openingBalanceForMonth,
+      netProfitFinance,
+    );
+
     const cashOnHand = openingBalanceForMonth + netProfitFinance;
 
     const daysRemainingForExpenses = Math.max(1, countWorkDays(todayStr, lastExpenseDate));
-    // O mínimo diário de contas já considera o faturamento do turno atual via netProfitShift;
-    // não subtraímos F_today aqui para evitar descontar os ganhos do dia duas vezes.
-    const expenseTargetToday = minimumForBillsShift > 0 ? minimumForBillsShift / daysRemainingForExpenses : 0;
+    // O mínimo diário de contas usa o cenário congelado (sem os ganhos do turno em andamento)
+    // para manter o valor cheio, enquanto o "falta p/ meta contas" considera o turno atual.
+    const expenseTargetToday = minimumForBillsShiftFrozen > 0 ? minimumForBillsShiftFrozen / daysRemainingForExpenses : 0;
 
     const endOfMonth = new Date(new Date().getFullYear(), new Date().getMonth() + 1, 0);
     const endOfMonthStr = [endOfMonth.getFullYear(), String(endOfMonth.getMonth() + 1).padStart(2,'0'), String(endOfMonth.getDate()).padStart(2,'0')].join('-');
     const daysRemainingForSalary = Math.max(1, countWorkDays(todayStr, endOfMonthStr));
 
     const salaryTargetToday = S > 0 ? salaryRemainingStart / daysRemainingForSalary : 0;
+
 
     let dailyGoal = 0;
     if (S > 0) {
@@ -715,6 +724,9 @@ function App() {
     }
 
     // NEW LOGIC: Remaining to Goal
+    const remainingAccountsToday = Math.max(0, expenseTargetToday - F_today);
+    const remainingSalaryToday = Math.max(0, salaryTargetToday - F_today);
+
     let remainingForToday = Math.max(0, dailyGoal - F_today);
     let isGoalMet = F_today >= dailyGoal;
     
@@ -772,9 +784,12 @@ function App() {
         minimumForBills: minimumForBillsDashboard,
         cashForBills: cashForBillsDashboard,
         minimumForBillsShift,
+        minimumForBillsShiftFrozen,
+        accountsRemainingWithShift: remainingAccountsToday,
         cashForBillsShift,
         openingBalanceForMonth, monthlyNetProfit, pendingBillsTotalMonth, remainingToMonthlyGoal,
         dailyGoal, expenseTargetToday, salaryTargetToday, F_today, dailyStatusColor, dailyStatusMessage,
+        remainingAccountsToday, remainingSalaryToday,
         remainingForToday, isGoalMet,
         pendingBillsTotalAll, remainingDays,
         totalExpensesThisMonth: totalExpenseFinance,
@@ -1014,11 +1029,22 @@ function App() {
                         {stats.isGoalMet ? 'Meta batida! Excedente:' : 'Falta para a meta:'}
                     </p>
                     <h3 className="text-4xl font-extrabold tracking-tight">
-                        {stats.isGoalMet 
-                            ? `+ ${formatCurrency(stats.F_today - stats.dailyGoal, true)}` 
+                        {stats.isGoalMet
+                            ? `+ ${formatCurrency(stats.F_today - stats.dailyGoal, true)}`
                             : formatCurrency(stats.remainingForToday, true)
                         }
                     </h3>
+                 </div>
+
+                 <div className="grid grid-cols-2 gap-2 mt-1 text-[11px] font-semibold">
+                    <div className="bg-white/10 rounded-lg px-2 py-1 flex justify-between items-center">
+                       <span className="opacity-80">Falta p/ meta salário</span>
+                       <span>{formatCurrency(stats.remainingSalaryToday, true)}</span>
+                    </div>
+                    <div className="bg-white/10 rounded-lg px-2 py-1 flex justify-between items-center">
+                       <span className="opacity-80">Falta p/ meta contas</span>
+                       <span>{formatCurrency(stats.accountsRemainingWithShift, true)}</span>
+                    </div>
                  </div>
                  
                  <div className="w-full h-1.5 bg-black/20 rounded-full overflow-hidden mb-2 mt-1">
