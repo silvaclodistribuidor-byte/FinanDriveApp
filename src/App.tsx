@@ -532,7 +532,10 @@ function App() {
       // Pausar
       const startTs = shiftStartRef.current ?? prev.startTime ?? Date.now();
       const elapsedSinceStart = Math.max(0, Math.floor((Date.now() - startTs) / 1000));
-      const updatedElapsed = prev.elapsedSeconds + elapsedSinceStart;
+      const updatedElapsed = Math.max(
+        prev.elapsedSeconds,
+        elapsedBaseRef.current + elapsedSinceStart
+      );
       elapsedBaseRef.current = updatedElapsed;
       shiftStartRef.current = null;
       clearShiftTimer();
@@ -546,7 +549,7 @@ function App() {
       if (!prev.isActive || prev.isPaused) return prev.elapsedSeconds;
       const startTs = shiftStartRef.current ?? prev.startTime ?? Date.now();
       const elapsedSinceStart = Math.max(0, Math.floor((Date.now() - startTs) / 1000));
-      return prev.elapsedSeconds + elapsedSinceStart;
+      return Math.max(prev.elapsedSeconds, elapsedBaseRef.current + elapsedSinceStart);
     };
 
     setShiftState(prev => ({
