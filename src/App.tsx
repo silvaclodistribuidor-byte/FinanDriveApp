@@ -175,6 +175,13 @@ function App() {
   const shiftStartRef = useRef<number | null>(null);
   const elapsedBaseRef = useRef<number>(0);
 
+  const clearShiftTimer = () => {
+    if (timerRef.current) {
+      clearInterval(timerRef.current);
+      timerRef.current = null;
+    }
+  };
+
   // 1. Monitor Authentication
   useEffect(() => {
     const unsubscribe = onAuthStateChanged(auth as any, (firebaseUser) => {
@@ -360,72 +367,50 @@ function App() {
       });
     }, [user, transactions, bills, categories, shiftState, isLoadingData, workDays, plannedWorkDates, monthlySalaryGoal, openingBalances, hasLoadedData, hasPendingChanges]);
 
-  // Shift Timer
+  // Shift Timer (cronômetro simplificado)
   useEffect(() => {
-    if (shiftState.isActive && !shiftState.isPaused) {
-      if (!shiftStartRef.current) {
-        const elapsedFromStart = shiftState.startTime
-          ? Math.max(0, Math.floor((Date.now() - shiftState.startTime) / 1000))
-          : 0;
-        const normalizedElapsed = Math.max(shiftState.elapsedSeconds, elapsedFromStart);
-        elapsedBaseRef.current = normalizedElapsed;
-        shiftStartRef.current = Date.now();
-        if (normalizedElapsed !== shiftState.elapsedSeconds) {
-          setShiftState(prev => ({ ...prev, elapsedSeconds: normalizedElapsed }));
-        }
-      } else {
-        elapsedBaseRef.current = shiftState.elapsedSeconds;
-      }
-
-      const intervalId = window.setInterval(() => {
-        const base = elapsedBaseRef.current;
-        const startTs = shiftStartRef.current ?? Date.now();
-        const elapsedSinceStart = Math.max(0, Math.floor((Date.now() - startTs) / 1000));
-        const nextElapsed = base + elapsedSinceStart;
-        setShiftState(prev => ({ ...prev, elapsedSeconds: nextElapsed }));
-      }, 1000);
-
-      timerRef.current = intervalId;
-      return () => {
-        clearInterval(intervalId);
-        timerRef.current = null;
-      };
-    }
-
-    if (timerRef.current) {
-      clearInterval(timerRef.current);
-      timerRef.current = null;
-    }
-
-    if (shiftState.isActive && shiftState.isPaused) {
-      shiftStartRef.current = null;
-      elapsedBaseRef.current = shiftState.elapsedSeconds;
-    } else {
+    if (!shiftState.isActive) {
+      clearShiftTimer();
       shiftStartRef.current = null;
       elapsedBaseRef.current = 0;
+      return;
     }
-  }, [shiftState.isActive, shiftState.isPaused, shiftState.startTime]);
 
-  // Normalize elapsed seconds after hydration when a shift is active
-  useEffect(() => {
-    if (!shiftState.isActive) return;
-    const elapsedFromStart = shiftState.startTime
-      ? Math.max(0, Math.floor((Date.now() - shiftState.startTime) / 1000))
-      : shiftState.elapsedSeconds;
-    const normalizedElapsed = Math.max(shiftState.elapsedSeconds, elapsedFromStart);
-    if (normalizedElapsed !== shiftState.elapsedSeconds) {
-      setShiftState(prev => ({ ...prev, elapsedSeconds: normalizedElapsed }));
-    }
-    elapsedBaseRef.current = normalizedElapsed;
-    shiftStartRef.current = shiftState.isPaused ? null : Date.now();
-  }, [shiftState.isActive]);
-
-  useEffect(() => {
-    if (!shiftState.isActive) return;
     if (shiftState.isPaused) {
+      clearShiftTimer();
+      shiftStartRef.current = null;
+      elapsedBaseRef.current = shiftState.elapsedSeconds;
+      return;
+    }
+
+    // Ativo e rodando
+    clearShiftTimer();
+    const baselineStart = shiftState.startTime ?? Date.now();
+    const deltaFromStart = Math.max(0, Math.floor((Date.now() - baselineStart) / 1000));
+    const normalizedElapsed = Math.max(shiftState.elapsedSeconds, elapsedBaseRef.current + deltaFromStart);
+
+    if (normalizedElapsed !== shiftState.elapsedSeconds) {
+      elapsedBaseRef.current = normalizedElapsed;
+      setShiftState(prev => ({ ...prev, elapsedSeconds: normalizedElapsed }));
+    } else {
       elapsedBaseRef.current = shiftState.elapsedSeconds;
     }
-  }, [shiftState.elapsedSeconds, shiftState.isPaused, shiftState.isActive]);
+
+    shiftStartRef.current = Date.now();
+
+    const intervalId = window.setInterval(() => {
+      if (!shiftStartRef.current) return;
+      const elapsedSinceResume = Math.max(0, Math.floor((Date.now() - shiftStartRef.current) / 1000));
+      const nextElapsed = elapsedBaseRef.current + elapsedSinceResume;
+      setShiftState(prev => ({ ...prev, elapsedSeconds: nextElapsed }));
+    }, 1000);
+
+    timerRef.current = intervalId;
+
+    return () => {
+      clearShiftTimer();
+    };
+  }, [shiftState.isActive, shiftState.isPaused, shiftState.startTime]);
 
   // Initial Check: Populate planned dates if empty
   useEffect(() => {
@@ -536,6 +521,7 @@ function App() {
     setShiftState(prev => {
       if (!prev.isActive) return prev;
 
+      // Retomar
       if (prev.isPaused) {
         const resumeNow = Date.now();
         shiftStartRef.current = resumeNow;
@@ -543,19 +529,34 @@ function App() {
         return { ...prev, isPaused: false, startTime: resumeNow };
       }
 
+      // Pausar
       const startTs = shiftStartRef.current ?? prev.startTime ?? Date.now();
       const elapsedSinceStart = Math.max(0, Math.floor((Date.now() - startTs) / 1000));
       const updatedElapsed = prev.elapsedSeconds + elapsedSinceStart;
       elapsedBaseRef.current = updatedElapsed;
       shiftStartRef.current = null;
+      clearShiftTimer();
       return { ...prev, isPaused: true, elapsedSeconds: updatedElapsed };
     });
   };
 
   const handleStopShift = () => {
+    clearShiftTimer();
+    const finalizeElapsed = (prev: ShiftState) => {
+      if (!prev.isActive || prev.isPaused) return prev.elapsedSeconds;
+      const startTs = shiftStartRef.current ?? prev.startTime ?? Date.now();
+      const elapsedSinceStart = Math.max(0, Math.floor((Date.now() - startTs) / 1000));
+      return prev.elapsedSeconds + elapsedSinceStart;
+    };
+
+    setShiftState(prev => ({
+      ...prev,
+      isPaused: true,
+      elapsedSeconds: finalizeElapsed(prev),
+    }));
+
     shiftStartRef.current = null;
     elapsedBaseRef.current = 0;
-    setShiftState(prev => ({ ...prev, isPaused: true }));
     setIsShiftModalOpen(true);
   };
 
@@ -564,16 +565,19 @@ function App() {
     const currentStart = shiftState.startTime ? new Date(shiftState.startTime) : new Date();
     const defaultTime = `${String(currentStart.getHours()).padStart(2, '0')}:${String(currentStart.getMinutes()).padStart(2, '0')}`;
     const newTimeStr = window.prompt("Ajustar horário de início (HH:mm):", defaultTime);
-    
+
     if (newTimeStr && /^\d{2}:\d{2}$/.test(newTimeStr)) {
       const [h, m] = newTimeStr.split(':').map(Number);
       const newStartDate = new Date();
       newStartDate.setHours(h, m, 0, 0);
-      const newElapsed = Math.floor((Date.now() - newStartDate.getTime()) / 1000);
+      const recalculatedElapsed = Math.max(0, Math.floor((Date.now() - newStartDate.getTime()) / 1000));
+      elapsedBaseRef.current = recalculatedElapsed;
+      shiftStartRef.current = shiftState.isPaused ? null : Date.now();
+
       setShiftState(prev => ({
         ...prev,
         startTime: newStartDate.getTime(),
-        elapsedSeconds: Math.max(0, newElapsed)
+        elapsedSeconds: recalculatedElapsed
       }));
     }
   };
@@ -602,8 +606,14 @@ function App() {
     
     // Shift & Basic Income
     const currentShiftEarnings = shiftState.earnings.uber + shiftState.earnings.n99 + shiftState.earnings.indrive + shiftState.earnings.private;
-    const effectiveShiftEarnings = shiftState.isActive ? currentShiftEarnings : 0;
-    const activeShiftExpenses = shiftState.isActive ? shiftState.expenses : 0;
+    const activeShiftExpenses = shiftState.expenses;
+
+    // Enquanto o turno está ativo ou pausado, o painel de controle não deve incorporar os números do turno
+    // nos cálculos financeiros; somente após o encerramento (quando o turno for salvo) os lançamentos serão
+    // enviados ao financeiro. A aba de Turno continua usando os valores do turno em andamento.
+    const shiftClosedForFinance = !(shiftState.isActive || shiftState.isPaused || isShiftModalOpen);
+    const effectiveShiftEarningsFinance = shiftClosedForFinance ? currentShiftEarnings : 0;
+    const effectiveShiftExpensesFinance = shiftClosedForFinance ? activeShiftExpenses : 0;
 
     const incomeTransactionsThisMonth = transactions
       .filter(t => t.type === TransactionType.INCOME && t.date.startsWith(currentMonthPrefix));
@@ -619,11 +629,18 @@ function App() {
       .filter(b => b.isPaid)
       .reduce((acc, b) => acc + b.amount, 0);
 
-    const totalIncome = monthlyIncomeFromTransactions + effectiveShiftEarnings;
-    const totalExpense = monthlyExpensesFromTransactions + monthlyExpensesFromBillsPaid + activeShiftExpenses;
-    const netProfit = totalIncome - totalExpense;
+    // Painel de controle (financeiro) usa apenas lançamentos fechados + turno encerrado
+    const totalIncomeFinance = monthlyIncomeFromTransactions + effectiveShiftEarningsFinance;
+    const totalExpenseFinance = monthlyExpensesFromTransactions + monthlyExpensesFromBillsPaid + effectiveShiftExpensesFinance;
+    const netProfitFinance = totalIncomeFinance - totalExpenseFinance;
+
+    // Aba de turno considera o turno em andamento
+    const totalIncomeShift = monthlyIncomeFromTransactions + currentShiftEarnings;
+    const totalExpenseShift = monthlyExpensesFromTransactions + monthlyExpensesFromBillsPaid + activeShiftExpenses;
+    const netProfitShift = totalIncomeShift - totalExpenseShift;
+
     const monthlyNetProfit = monthlyIncomeFromTransactions - (monthlyExpensesFromTransactions + monthlyExpensesFromBillsPaid);
-    const profitMargin = totalIncome > 0 ? (netProfit / totalIncome) * 100 : 0;
+    const profitMargin = totalIncomeFinance > 0 ? (netProfitFinance / totalIncomeFinance) * 100 : 0;
     
     // Monthly Vars
     const totalMonthlyExpenses = billsThisMonth.reduce((acc, b) => acc + b.amount, 0);
@@ -631,7 +648,7 @@ function App() {
 
     const savedIncomeThisMonth = monthlyIncomeFromTransactions;
 
-    const F = savedIncomeThisMonth + effectiveShiftEarnings;
+    const F = savedIncomeThisMonth + effectiveShiftEarningsFinance;
     const S = monthlySalaryGoal || 0;
 
     // Daily Logic (STABLE GOAL)
@@ -639,17 +656,16 @@ function App() {
       .filter(t => t.type === TransactionType.INCOME && t.date === todayStr)
       .reduce((acc, t) => acc + t.amount, 0);
     
-    const F_today = savedIncomeToday + effectiveShiftEarnings;
+    // Para metas do turno, o faturamento do dia inclui o turno em andamento
+    const F_today = savedIncomeToday + currentShiftEarnings;
 
-    // Monthly Status Calc (salary progress always based on lucro líquido)
-    // A meta salarial deve avançar com o faturamento bruto do mês (incluindo ganhos do turno ativo),
-    // não apenas com o lucro líquido. Por isso usamos o faturado do mês (F) em vez do netProfit aqui.
-    const salaryAccumulated = Math.max(0, F);
-    const salaryRemaining = S > 0 ? Math.max(0, S - salaryAccumulated) : 0;
+    // Monthly Status Calc (progress bar usa faturamento bruto + ganhos do turno ativo)
+    const salaryAccumulatedForProgress = Math.max(0, F);
+    const salaryRemainingForProgress = S > 0 ? Math.max(0, S - salaryAccumulatedForProgress) : 0;
 
-    // Daily Target Calc (Based on Start of Day)
-    const salaryAccumulatedStart = salaryAccumulated;
-    const salaryRemainingStart = salaryRemaining;
+    // Daily Target Calc (meta do dia congelada no início, sem os ganhos do turno ativo)
+    const salaryAccumulatedStart = Math.max(0, savedIncomeThisMonth);
+    const salaryRemainingStart = S > 0 ? Math.max(0, S - salaryAccumulatedStart) : 0;
 
     const countWorkDays = (startStr: string, endStr: string) => {
       return plannedWorkDates.filter(d => d >= startStr && d <= endStr).length;
@@ -668,22 +684,41 @@ function App() {
     const pendingBillsTotalMonth = unpaidBillsThisMonth.reduce((acc, b) => acc + b.amount, 0);
     const openingBalanceForMonth = openingBalances[currentMonthPrefix] || 0;
     // Bill coverage: use monthly net profit (including current shift earnings/expenses) plus the opening balance
-    const { cashForBills, minimumForBills } = computeMinimumForBills(
+    // Cobertura de contas para o painel (financeiro) — ignora turno em andamento
+    const { cashForBills: cashForBillsDashboard, minimumForBills: minimumForBillsDashboard } = computeMinimumForBills(
       pendingBillsTotalMonth,
       openingBalanceForMonth,
-      netProfit,
+      netProfitFinance,
     );
 
-    const cashOnHand = openingBalanceForMonth + netProfit;
+    // Cobertura de contas para a aba de turno — considera o turno atual
+    const { cashForBills: cashForBillsShift, minimumForBills: minimumForBillsShift } = computeMinimumForBills(
+      pendingBillsTotalMonth,
+      openingBalanceForMonth,
+      netProfitShift,
+    );
+
+    // Mantemos o alvo diário de contas estável (sem os ganhos do turno em andamento),
+    // mas exibimos o valor faltante para contas já descontando o turno atual em uma célula dedicada.
+    const { minimumForBills: minimumForBillsShiftFrozen } = computeMinimumForBills(
+      pendingBillsTotalMonth,
+      openingBalanceForMonth,
+      netProfitFinance,
+    );
+
+    const cashOnHand = openingBalanceForMonth + netProfitFinance;
 
     const daysRemainingForExpenses = Math.max(1, countWorkDays(todayStr, lastExpenseDate));
-    const expenseTargetToday = minimumForBills > 0 ? minimumForBills / daysRemainingForExpenses : 0;
+    // O mínimo diário de contas usa o cenário congelado (sem os ganhos do turno em andamento)
+    // para manter o valor cheio, enquanto o "falta p/ meta contas" considera o turno atual.
+    const expenseTargetToday = minimumForBillsShiftFrozen > 0 ? minimumForBillsShiftFrozen / daysRemainingForExpenses : 0;
 
     const endOfMonth = new Date(new Date().getFullYear(), new Date().getMonth() + 1, 0);
     const endOfMonthStr = [endOfMonth.getFullYear(), String(endOfMonth.getMonth() + 1).padStart(2,'0'), String(endOfMonth.getDate()).padStart(2,'0')].join('-');
     const daysRemainingForSalary = Math.max(1, countWorkDays(todayStr, endOfMonthStr));
 
     const salaryTargetToday = S > 0 ? salaryRemainingStart / daysRemainingForSalary : 0;
+
 
     let dailyGoal = 0;
     if (S > 0) {
@@ -693,6 +728,9 @@ function App() {
     }
 
     // NEW LOGIC: Remaining to Goal
+    const remainingAccountsToday = Math.max(0, expenseTargetToday - F_today);
+    const remainingSalaryToday = Math.max(0, salaryTargetToday - F_today);
+
     let remainingForToday = Math.max(0, dailyGoal - F_today);
     let isGoalMet = F_today >= dailyGoal;
     
@@ -701,10 +739,10 @@ function App() {
     let dailyStatusMessage = "Parabéns! Você bateu a meta de hoje.";
 
     if (!isGoalMet) {
-      if (minimumForBills > 0 && F_today < expenseTargetToday) {
+      if (minimumForBillsShift > 0 && F_today < expenseTargetToday) {
         dailyStatusColor = "bg-rose-600";
         dailyStatusMessage = "Atenção: Mínimo para contas ainda não atingido.";
-      } else if (minimumForBills === 0 && salaryRemainingStart > 0) {
+      } else if (minimumForBillsShift === 0 && salaryRemainingStart > 0) {
         dailyStatusColor = "bg-amber-500";
         dailyStatusMessage = "Contas garantidas! Foque na meta salarial.";
       } else {
@@ -719,8 +757,8 @@ function App() {
           : "Meta exata atingida!";
     }
 
-    const remainingToMonthlyGoal = salaryRemaining;
-    const billsCovered = minimumForBills === 0;
+    const remainingToMonthlyGoal = salaryRemainingForProgress;
+    const billsCovered = minimumForBillsDashboard === 0;
     const salaryGoalMet = S > 0 ? remainingToMonthlyGoal === 0 : false;
 
     let statusColor = "bg-emerald-600";
@@ -729,7 +767,7 @@ function App() {
 
     if (!billsCovered) {
       statusColor = "bg-rose-600";
-      statusMessage = `Faltam ${formatCurrency(minimumForBills, true)} para garantir as contas do mês!`;
+      statusMessage = `Faltam ${formatCurrency(minimumForBillsDashboard, true)} para garantir as contas do mês!`;
     } else if (S > 0 && !salaryGoalMet) {
       statusColor = "bg-amber-500";
       statusMessage = `Contas cobertas. Faltam ${formatCurrency(remainingToMonthlyGoal, true)} para o salário.`;
@@ -742,16 +780,26 @@ function App() {
     const remainingDays = remainingPlannedDates.length;
 
     return { 
-        totalIncome, totalExpense, netProfit, profitMargin,
+        totalIncome: totalIncomeFinance,
+        totalExpense: totalExpenseFinance,
+        netProfit: netProfitFinance,
+        profitMargin,
         displayGoal, D, F, S, statusColor, statusMessage,
-        minimumForBills, cashForBills, openingBalanceForMonth, monthlyNetProfit, pendingBillsTotalMonth, remainingToMonthlyGoal,
+        minimumForBills: minimumForBillsDashboard,
+        cashForBills: cashForBillsDashboard,
+        minimumForBillsShift,
+        minimumForBillsShiftFrozen,
+        accountsRemainingWithShift: remainingAccountsToday,
+        cashForBillsShift,
+        openingBalanceForMonth, monthlyNetProfit, pendingBillsTotalMonth, remainingToMonthlyGoal,
         dailyGoal, expenseTargetToday, salaryTargetToday, F_today, dailyStatusColor, dailyStatusMessage,
+        remainingAccountsToday, remainingSalaryToday,
         remainingForToday, isGoalMet,
         pendingBillsTotalAll, remainingDays,
-        totalExpensesThisMonth: totalExpense,
+        totalExpensesThisMonth: totalExpenseFinance,
         cashOnHand,
     };
-  }, [transactions, bills, plannedWorkDates, monthlySalaryGoal, shiftState, openingBalances]);
+  }, [transactions, bills, plannedWorkDates, monthlySalaryGoal, shiftState, openingBalances, isShiftModalOpen]);
 
   // ... (Other useMemos: billsSummary, filteredHistory, historySummary, pieData - Unchanged)
   const billsSummary = useMemo(() => ({
@@ -985,11 +1033,22 @@ function App() {
                         {stats.isGoalMet ? 'Meta batida! Excedente:' : 'Falta para a meta:'}
                     </p>
                     <h3 className="text-4xl font-extrabold tracking-tight">
-                        {stats.isGoalMet 
-                            ? `+ ${formatCurrency(stats.F_today - stats.dailyGoal, true)}` 
+                        {stats.isGoalMet
+                            ? `+ ${formatCurrency(stats.F_today - stats.dailyGoal, true)}`
                             : formatCurrency(stats.remainingForToday, true)
                         }
                     </h3>
+                 </div>
+
+                 <div className="grid grid-cols-2 gap-2 mt-1 text-[11px] font-semibold">
+                    <div className="bg-white/10 rounded-lg px-2 py-1 flex justify-between items-center">
+                       <span className="opacity-80">Falta p/ meta salário</span>
+                       <span>{formatCurrency(stats.remainingSalaryToday, true)}</span>
+                    </div>
+                    <div className="bg-white/10 rounded-lg px-2 py-1 flex justify-between items-center">
+                       <span className="opacity-80">Falta p/ meta contas</span>
+                       <span>{formatCurrency(stats.accountsRemainingWithShift, true)}</span>
+                    </div>
                  </div>
                  
                  <div className="w-full h-1.5 bg-black/20 rounded-full overflow-hidden mb-2 mt-1">
