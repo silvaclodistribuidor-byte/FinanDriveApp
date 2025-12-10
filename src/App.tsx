@@ -13,53 +13,42 @@ import {
   Play,
   Pause,
   StopCircle,
-  Fuel,
+  ArrowUpRight,
+  ArrowDownRight,
+  ArrowRight,
+  ChevronDown,
+  ChevronUp,
+  ChevronRight,
+  LogIn,
+  LogOut,
+  AlertTriangle,
   Plus,
   Trash2,
   Edit2,
-  Settings,
   Eye,
   EyeOff,
+  Fuel,
+  Settings,
   PieChart as PieChartIcon,
   Filter,
-  ChevronRight,
   ArrowDownCircle,
   ArrowUpCircle,
   CheckCircle2,
   AlertCircle,
-  LogOut,
-  CalendarCheck,
-  AlertTriangle,
-  TrendingUp,
-  Tags,
-  Check
-} from 'lucide-react';
-import { PieChart, Pie, Cell, Tooltip, ResponsiveContainer, Legend } from 'recharts';
-import { onAuthStateChanged } from 'firebase/auth';
-import { StatCard } from './components/StatCard';
-import { TransactionModal } from './components/TransactionModal';
-import { ShiftModal } from './components/ShiftModal';
-import { ShiftEntryModal } from './components/ShiftEntryModal';
-import { BillModal } from './components/BillModal';
-import { SettingsModal } from './components/SettingsModal';
-import { ReportsTab } from './components/ReportsTab';
-import { Login } from './components/Login';
-import { computeMinimumForBills } from './utils/bills';
-import { formatCurrencyInputMask, parseCurrencyInputToNumber, formatCurrencyPtBr } from './utils/currency';
-import {
-  loadAppData,
-  saveAppData,
-  auth,
-  logoutUser,
-  createDriverDocIfMissing,
-} from "./services/firestoreService";
-import { Transaction, TransactionType, ExpenseCategory, Bill, ShiftState, DEFAULT_CATEGORIES, Category } from './types';
-
-// Usuário usado internamente no app (derivado do Firebase Auth)
-export interface User {
-  uid: string;
-  email: string | null;
-}
+  Info
+} from "lucide-react";
+import { PieChart, Pie, Cell, Tooltip, ResponsiveContainer, Legend } from "recharts";
+import { Login } from "./components/Login";
+import { StatCard } from "./components/StatCard";
+import { TransactionModal } from "./components/TransactionModal";
+import { ShiftModal } from "./components/ShiftModal";
+import { ShiftEntryModal } from "./components/ShiftEntryModal";
+import { BillModal } from "./components/BillModal";
+import { SettingsModal } from "./components/SettingsModal";
+import { ReportsTab } from "./components/ReportsTab";
+import { loadAppData, saveAppData, auth, logoutUser, createDriverDocIfMissing } from "./services/firestoreService";
+import { Transaction, TransactionType, ExpenseCategory, Bill, ShiftState, DEFAULT_CATEGORIES, Category } from "./types";
+import { onAuthStateChanged, User } from "firebase/auth";
 
 const getTodayString = () => {
   const now = new Date();
@@ -106,6 +95,7 @@ const renderCustomizedLabel = ({ cx, cy, midAngle, innerRadius, outerRadius, per
 
 const INITIAL_TRANSACTIONS: Transaction[] = [];
 const INITIAL_BILLS: Bill[] = [];
+
 const createInitialShiftState = (): ShiftState => ({
   isActive: false,
   isPaused: false,
@@ -128,6 +118,177 @@ const buildInitialAppState = () => ({
   openingBalances: {},
 });
 
+const formatCurrency = (value: number): string =>
+  value.toLocaleString('pt-BR', {
+    style: 'currency',
+    currency: 'BRL',
+    maximumFractionDigits: 2,
+  });
+
+const safeNumber = (value: any): number => {
+  const n = Number(value);
+  return Number.isFinite(n) ? n : 0;
+};
+
+const countBusinessDays = (dates: string[]) => {
+  const set = new Set(dates);
+  return set.size;
+};
+
+const getCurrentMonthKey = () => {
+  const now = new Date();
+  return `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}`;
+};
+
+const extractMonthKey = (dateStr: string): string | null => {
+  if (!dateStr) return null;
+  const [y, m] = dateStr.split('-');
+  if (!y || !m) return null;
+  return `${y}-${m}`;
+};
+
+const computePlannedWorkDates = (workDays: number[]): string[] => {
+  const today = new Date();
+  const monthStart = new Date(today.getFullYear(), today.getMonth(), 1);
+  const nextMonth = new Date(today.getFullYear(), today.getMonth() + 1, 1);
+  const dates: string[] = [];
+
+  for (let d = new Date(monthStart); d < nextMonth; d.setDate(d.getDate() + 1)) {
+    const dayOfWeek = d.getDay();
+    const mappedDay = dayOfWeek === 0 ? 7 : dayOfWeek;
+    if (workDays.includes(mappedDay)) {
+      const y = d.getFullYear();
+      const m = String(d.getMonth() + 1).padStart(2, '0');
+      const day = String(d.getDate()).padStart(2, '0');
+      dates.push(`${y}-${m}-${day}`);
+    }
+  }
+
+  return dates;
+};
+
+const filterTransactionsByRange = (
+  transactions: Transaction[],
+  range: 'today' | 'week' | 'month' | 'all' | 'custom',
+  customStart?: string,
+  customEnd?: string
+) => {
+  const now = new Date();
+  const today = getTodayString();
+  let startDate: Date | null = null;
+  let endDate: Date | null = null;
+
+  switch (range) {
+    case 'today':
+      startDate = parseDateFromInput(today);
+      endDate = new Date(startDate);
+      endDate.setDate(endDate.getDate() + 1);
+      break;
+    case 'week': {
+      const day = now.getDay();
+      const sunday = new Date(now);
+      sunday.setDate(now.getDate() - day);
+      sunday.setHours(0, 0, 0, 0);
+
+      const nextSunday = new Date(sunday);
+      nextSunday.setDate(sunday.getDate() + 7);
+
+      const targetSunday = new Date(nextSunday.getFullYear(), nextSunday.getMonth(), nextSunday.getDate());
+      if (now.getDay() === 0) {
+        startDate = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+        endDate = new Date(now);
+        endDate.setDate(now.getDate() + 1);
+      } else {
+        startDate = targetSunday;
+        startDate.setDate(targetSunday.getDate() - 7);
+        endDate = new Date(startDate);
+        endDate.setDate(startDate.getDate() + 7);
+      }
+      break;
+    }
+    case 'month': {
+      startDate = new Date(now.getFullYear(), now.getMonth(), 1);
+      endDate = new Date(now.getFullYear(), now.getMonth() + 1, 1);
+      break;
+    }
+    case 'custom':
+      if (customStart) startDate = parseDateFromInput(customStart);
+      if (customEnd) {
+        endDate = parseDateFromInput(customEnd);
+        endDate.setDate(endDate.getDate() + 1);
+      }
+      break;
+    case 'all':
+    default:
+      return transactions;
+  }
+
+  if (!startDate || !endDate) return transactions;
+
+  return transactions.filter(t => {
+    const d = parseDateFromInput(t.date);
+    return d >= startDate! && d < endDate!;
+  });
+};
+
+const computeMinimumForBills = (
+  bills: Bill[],
+  openingBalances: Record<string, number>,
+  monthlySalaryGoal: number,
+  dateFilter?: (bill: Bill) => boolean
+) => {
+  const today = new Date();
+  const todayStr = getTodayString();
+  const currentMonthKey = getCurrentMonthKey();
+
+  const filteredBills = bills.filter(bill => {
+    if (bill.isPaid) return false;
+    const billMonthKey = extractMonthKey(bill.dueDate);
+    if (billMonthKey !== currentMonthKey) return false;
+    if (dateFilter && !dateFilter(bill)) return false;
+    return true;
+  });
+
+  const totalBills = filteredBills.reduce((sum, bill) => sum + bill.amount, 0);
+  const totalOpeningBalance = Object.values(openingBalances || {}).reduce((sum, v) => sum + v, 0);
+
+  const effectiveOpeningBalance = Math.max(0, totalOpeningBalance);
+  const remainingBillsAfterCash = Math.max(0, totalBills - effectiveOpeningBalance);
+
+  const totalSalaryGoal = monthlySalaryGoal || 0;
+
+  const firstOfMonth = new Date(today.getFullYear(), today.getMonth(), 1);
+  const dayOfMonth = today.getDate();
+  const daysInMonth = new Date(today.getFullYear(), today.getMonth() + 1, 0).getDate();
+  const daysRemainingIncludingToday = daysInMonth - dayOfMonth + 1;
+
+  const monthlyBillsAndSalary = remainingBillsAfterCash + totalSalaryGoal;
+
+  const avgPerDay = daysRemainingIncludingToday > 0
+    ? monthlyBillsAndSalary / daysRemainingIncludingToday
+    : monthlyBillsAndSalary;
+
+  const overdueAndTodayBills = filteredBills.filter(bill => {
+    const billDate = parseDateFromInput(bill.dueDate);
+    const billDateStr = bill.dueDate;
+    return billDateStr <= todayStr;
+  });
+
+  const overdueAndTodayTotal = overdueAndTodayBills.reduce((sum, bill) => sum + bill.amount, 0);
+  const overdueAfterCash = Math.max(0, overdueAndTodayTotal - effectiveOpeningBalance);
+
+  return {
+    totalBills,
+    effectiveOpeningBalance,
+    remainingBillsAfterCash,
+    totalSalaryGoal,
+    monthlyBillsAndSalary,
+    avgPerDay,
+    overdueAndTodayTotal,
+    overdueAfterCash,
+  };
+};
+
 function App() {
   const [user, setUser] = useState<User | null>(null);
   const [authLoading, setAuthLoading] = useState(true);
@@ -136,24 +297,19 @@ function App() {
   const isHydratingRef = useRef(false);
   const hydrationCompleteRef = useRef(false);
 
-  // App Data State
   const [transactions, setTransactions] = useState<Transaction[]>(INITIAL_TRANSACTIONS);
   const [bills, setBills] = useState<Bill[]>(INITIAL_BILLS);
   const [categories, setCategories] = useState<Category[]>(DEFAULT_CATEGORIES);
-  
-  // New Settings State
-  const [workDays, setWorkDays] = useState<number[]>([1, 2, 3, 4, 5, 6]); // 0=Sun, 6=Sat (Generic Preference)
-  const [plannedWorkDates, setPlannedWorkDates] = useState<string[]>([]); // Specific dates YYYY-MM-DD
-  const [monthlySalaryGoal, setMonthlySalaryGoal] = useState<number>(0);
-  const [openingBalances, setOpeningBalances] = useState<Record<string, number>>({});
-  const [openingBalanceInput, setOpeningBalanceInput] = useState<string>('');
 
-  // UI State
   const [isLoadingData, setIsLoadingData] = useState(false);
+  const [workDays, setWorkDays] = useState<number[]>([1, 2, 3, 4, 5, 6]);
+  const [plannedWorkDates, setPlannedWorkDates] = useState<string[]>([]);
+  const [monthlySalaryGoal, setMonthlySalaryGoal] = useState(0);
+  const [openingBalances, setOpeningBalances] = useState<Record<string, number>>({});
+
   const [showValues, setShowValues] = useState(true);
   const [activeTab, setActiveTab] = useState<'dashboard' | 'bills' | 'history' | 'shift' | 'reports'>('dashboard');
-  
-  // Modals
+
   const [isTransModalOpen, setIsTransModalOpen] = useState(false);
   const [isShiftModalOpen, setIsShiftModalOpen] = useState(false);
   const [isBillModalOpen, setIsBillModalOpen] = useState(false);
@@ -162,111 +318,207 @@ function App() {
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
   const [entryModalOpen, setEntryModalOpen] = useState(false);
 
-  // Filter & Input State
   const [historyRange, setHistoryRange] = useState<'today' | 'week' | 'month' | 'all' | 'custom'>('all');
   const [historyCustomStart, setHistoryCustomStart] = useState('');
   const [historyCustomEnd, setHistoryCustomEnd] = useState('');
   const [entryCategory, setEntryCategory] = useState<'uber' | '99' | 'indrive' | 'private' | 'km' | 'expense' | null>(null);
 
-  // Shift Logic
-  const [shiftState, setShiftState] = useState<ShiftState>(createInitialShiftState());
+  const [shiftState, setShiftState] = useState<ShiftState>(() => createInitialShiftState());
 
   const timerRef = useRef<number | null>(null);
   const shiftStartRef = useRef<number | null>(null);
   const elapsedBaseRef = useRef<number>(0);
 
   const clearShiftTimer = () => {
-    if (timerRef.current) {
-      clearInterval(timerRef.current);
+    if (timerRef.current !== null) {
+      window.clearInterval(timerRef.current);
       timerRef.current = null;
     }
   };
 
-  // 1. Monitor Authentication
   useEffect(() => {
-    const unsubscribe = onAuthStateChanged(auth as any, (firebaseUser) => {
-      if (firebaseUser) {
-        setUser({ uid: firebaseUser.uid, email: firebaseUser.email ?? null });
-      } else {
-        setUser(null);
-      }
-      setAuthLoading(false);
-    });
-    return () => unsubscribe();
-  }, []);
-
-  // 2. Load Data and create only when missing
-  useEffect(() => {
-    if (!user) {
-      setHasLoadedData(false);
-      setHasPendingChanges(false);
-      hydrationCompleteRef.current = false;
-      setTransactions(INITIAL_TRANSACTIONS);
-      setBills(INITIAL_BILLS);
-      setCategories(DEFAULT_CATEGORIES);
-      setShiftState(createInitialShiftState());
-      setWorkDays([1, 2, 3, 4, 5, 6]);
-      setPlannedWorkDates([]);
-      setMonthlySalaryGoal(0);
-      setOpeningBalances({});
+    if (!shiftState.isActive) {
+      clearShiftTimer();
+      shiftStartRef.current = null;
+      elapsedBaseRef.current = 0;
       return;
     }
 
-    console.log('[app] onAuthStateChanged -> start hydration', { userId: user.uid });
+    if (shiftState.isPaused) {
+      clearShiftTimer();
+      shiftStartRef.current = null;
+      elapsedBaseRef.current = shiftState.elapsedSeconds;
+      return;
+    }
 
-    setHasLoadedData(false);
-    setHasPendingChanges(false);
-    setIsLoadingData(true);
-    isHydratingRef.current = true;
-    hydrationCompleteRef.current = false;
+    clearShiftTimer();
+    const baselineStart = shiftState.startTime ?? Date.now();
+    const deltaFromStart = Math.max(0, Math.floor((Date.now() - baselineStart) / 1000));
+    const normalizedElapsed = Math.max(shiftState.elapsedSeconds, 
+      elapsedBaseRef.current + deltaFromStart);
 
-    let cancelled = false;
-    let loadErrored = false;
+    if (normalizedElapsed !== shiftState.elapsedSeconds) {
+      elapsedBaseRef.current = normalizedElapsed;
+      setShiftState(prev => ({ ...prev, elapsedSeconds: normalizedElapsed }));
+    } else {
+      elapsedBaseRef.current = shiftState.elapsedSeconds;
+    }
 
-    loadAppData(user.uid)
-      .then(async ({ data, exists }) => {
-        if (cancelled) return;
+    shiftStartRef.current = Date.now();
 
-        if (exists && data) {
-          console.log('[app] hydration: doc exists, applying state', {
-            userId: user.uid,
-            summary: {
-              transactions: Array.isArray(data.transactions) ? data.transactions.length : 0,
-              bills: Array.isArray(data.bills) ? data.bills.length : 0,
-              categories: Array.isArray(data.categories) ? data.categories.length : 0,
-              hasShiftState: Boolean(data.shiftState),
-            },
-          });
-          if (data.transactions) setTransactions(data.transactions);
-          else setTransactions([]);
+    const intervalId = window.setInterval(() => {
+      if (!shiftStartRef.current) return;
+      const elapsedSinceResume = Math.max(0, Math.floor((Date.now() - shiftStartRef.current) / 1000));
+      const nextElapsed = elapsedBaseRef.current + elapsedSinceResume;
+      setShiftState(prev => ({ ...prev, elapsedSeconds: nextElapsed }));
+    }, 1000);
 
-          if (data.bills) setBills(data.bills);
-          else setBills([]);
+    timerRef.current = intervalId;
 
-          if (data.categories) {
-            if (data.categories.length > 0 && typeof data.categories[0] === 'string') {
-              const migratedCats: Category[] = data.categories.map((c: string, i: number) => ({
-                id: `migrated_${i}_${Date.now()}`,
-                name: c,
-                type: 'both',
-                driverId: user.uid,
-              }));
-              setCategories(migratedCats);
+    return () => {
+      clearShiftTimer();
+    };
+  }, [shiftState.isActive, shiftState.isPaused, shiftState.startTime]);
+
+  useEffect(() => {
+    if (!isLoadingData && user && workDays.length > 0) {
+      const today = new Date();
+      const currentMonthStr = `${today.getFullYear()}-${String(today.getMonth() + 1).padStart(2, '0')}`;
+      
+      const hasPlanForThisMonth = plannedWorkDates.some(d => d.startsWith(currentMonthStr));
+      if (!hasPlanForThisMonth) {
+        const newPlanned = computePlannedWorkDates(workDays);
+        setPlannedWorkDates(newPlanned);
+      }
+    }
+  }, [isLoadingData, user, workDays, plannedWorkDates]);
+
+  useEffect(() => {
+    if (!auth) {
+      setAuthLoading(false);
+      return;
+    }
+
+    const unsubscribe = onAuthStateChanged(auth, (currentUser) => {
+      setUser(currentUser);
+      setAuthLoading(false);
+
+      if (!currentUser) {
+        clearShiftTimer();
+        setHasLoadedData(false);
+        setHasPendingChanges(false);
+        isHydratingRef.current = false;
+        hydrationCompleteRef.current = false;
+        setTransactions([]);
+        setBills([]);
+        setCategories(DEFAULT_CATEGORIES);
+        setShiftState(createInitialShiftState());
+        setWorkDays([1, 2, 3, 4, 5, 6]);
+        setPlannedWorkDates([]);
+        setMonthlySalaryGoal(0);
+        setOpeningBalances({});
+        return;
+      }
+
+      console.log('[app] onAuthStateChanged -> start hydration', { userId: currentUser.uid });
+
+      setHasLoadedData(false);
+      setHasPendingChanges(false);
+      setIsLoadingData(true);
+      isHydratingRef.current = true;
+      hydrationCompleteRef.current = false;
+
+      let cancelled = false;
+
+      loadAppData(currentUser.uid)
+        .then(async ({ data, exists }) => {
+          if (cancelled) return;
+
+          if (exists && data) {
+            console.log('[app] hydration: doc exists, applying state', {
+              userId: currentUser.uid,
+              summary: {
+                transactions: Array.isArray(data.transactions) ? data.transactions.length : 0,
+                bills: Array.isArray(data.bills) ? data.bills.length : 0,
+                categories: Array.isArray(data.categories) ? data.categories.length : 0,
+                hasShiftState: Boolean(data.shiftState),
+              },
+            });
+
+            if (data.transactions) setTransactions(data.transactions);
+            else setTransactions([]);
+
+            if (data.bills) setBills(data.bills);
+            else setBills([]);
+
+            if (data.categories) {
+              if (data.categories.length > 0 && typeof data.categories[0] === 'string') {
+                const migratedCats: Category[] = data.categories.map((c: string, i: number) => ({
+                  id: `migrated_${i}_${Date.now()}`,
+                  name: c,
+                  type: 'both',
+                  driverId: currentUser.uid,
+                }));
+                setCategories(migratedCats);
+              } else {
+                setCategories(data.categories);
+              }
             } else {
-              setCategories(data.categories);
+              setCategories(DEFAULT_CATEGORIES);
+            }
+
+            if (data.workDays) setWorkDays(data.workDays);
+            if (data.plannedWorkDates) setPlannedWorkDates(data.plannedWorkDates);
+            if (data.monthlySalaryGoal) setMonthlySalaryGoal(data.monthlySalaryGoal);
+            if (data.openingBalances) setOpeningBalances(data.openingBalances);
+            if (data.shiftState) {
+              let hydratedShiftState: ShiftState = { ...data.shiftState };
+
+              // Ajuste extra: se o turno estiver ativo e não pausado quando o app reabre,
+              // corrige o elapsedSeconds considerando o tempo de relógio desde startTime.
+              if (hydratedShiftState.isActive && !hydratedShiftState.isPaused && hydratedShiftState.startTime) {
+                const now = Date.now();
+                const baseStart =
+                  typeof hydratedShiftState.startTime === 'number'
+                    ? hydratedShiftState.startTime
+                    : new Date(hydratedShiftState.startTime).getTime();
+
+                if (baseStart && Number.isFinite(baseStart)) {
+                  const secondsSinceStart = Math.max(
+                    0,
+                    Math.floor((now - baseStart) / 1000)
+                  );
+                  const previousElapsed = hydratedShiftState.elapsedSeconds ?? 0;
+                  const normalizedElapsed = Math.max(previousElapsed, secondsSinceStart);
+
+                  hydratedShiftState = {
+                    ...hydratedShiftState,
+                    elapsedSeconds: normalizedElapsed,
+                  };
+                }
+              }
+
+              setShiftState(hydratedShiftState);
+            } else {
+              setShiftState(createInitialShiftState());
             }
           } else {
-            setCategories(DEFAULT_CATEGORIES);
-          }
+            console.log('[app] hydration: doc missing, seeding defaults', { userId: currentUser.uid });
+            const initial = buildInitialAppState();
+            setTransactions(initial.transactions);
+            setBills(initial.bills);
+            setCategories(initial.categories);
+            setShiftState(initial.shiftState);
+            setWorkDays(initial.workDays);
+            setPlannedWorkDates(initial.plannedWorkDates);
+            setMonthlySalaryGoal(initial.monthlySalaryGoal);
+            setOpeningBalances(initial.openingBalances);
 
-          if (data.workDays) setWorkDays(data.workDays);
-          if (data.plannedWorkDates) setPlannedWorkDates(data.plannedWorkDates);
-          if (data.monthlySalaryGoal) setMonthlySalaryGoal(data.monthlySalaryGoal);
-          if (data.openingBalances) setOpeningBalances(data.openingBalances);
-          if (data.shiftState) setShiftState(data.shiftState);
-          else setShiftState(createInitialShiftState());
-        } else {
-          console.log('[app] hydration: doc missing, seeding defaults', { userId: user.uid });
+            await createDriverDocIfMissing(initial, currentUser.uid);
+          }
+        })
+        .catch((error) => {
+          console.error('Erro ao carregar dados do usuário:', error);
           const initial = buildInitialAppState();
           setTransactions(initial.transactions);
           setBills(initial.bills);
@@ -276,48 +528,29 @@ function App() {
           setPlannedWorkDates(initial.plannedWorkDates);
           setMonthlySalaryGoal(initial.monthlySalaryGoal);
           setOpeningBalances(initial.openingBalances);
-
-          await createDriverDocIfMissing(initial, user.uid);
-        }
-      })
-      .catch((error) => {
-        loadErrored = true;
-        console.error('[app] hydration error while loading user data', { userId: user.uid, error });
-        setTransactions([]);
-        setBills([]);
-        setCategories(DEFAULT_CATEGORIES);
-      })
-      .finally(() => {
-        if (cancelled) return;
-        if (loadErrored) {
+        })
+        .finally(() => {
+          if (cancelled) return;
+          setHasLoadedData(true);
           setIsLoadingData(false);
-          hydrationCompleteRef.current = false;
+          hydrationCompleteRef.current = true;
           isHydratingRef.current = false;
-          console.log('[app] hydration aborted due to load error', { userId: user.uid });
-          return;
-        }
-        setHasLoadedData(true);
-        setIsLoadingData(false);
-        hydrationCompleteRef.current = true;
-        console.log('[app] hydration complete', { userId: user.uid });
-        setTimeout(() => {
-          isHydratingRef.current = false;
-          console.log('[app] hydration guard released', { userId: user.uid });
-        }, 0);
-      });
+        });
 
-    return () => {
-      cancelled = true;
-      isHydratingRef.current = false;
-      hydrationCompleteRef.current = false;
-    };
-  }, [user]);
+      return () => {
+        cancelled = true;
+        isHydratingRef.current = false;
+        hydrationCompleteRef.current = false;
+      };
+    });
 
-  // 3. Mark local changes only after hydration
+    return () => unsubscribe();
+  }, []);
+
   useEffect(() => {
     if (!user || !hasLoadedData || isLoadingData || isHydratingRef.current || !hydrationCompleteRef.current) return;
     console.log('[app] local state changed -> pending changes flagged', {
-      userId: user.uid,
+      userId: user?.uid,
       guard: {
         hasLoadedData,
         isLoadingData,
@@ -328,7 +561,6 @@ function App() {
     setHasPendingChanges(true);
   }, [transactions, bills, categories, shiftState, workDays, plannedWorkDates, monthlySalaryGoal, openingBalances, user, hasLoadedData, isLoadingData]);
 
-  // 4. Save Data only when there are pending changes post-hydration
   useEffect(() => {
     if (!user || isLoadingData || !hasLoadedData || !hasPendingChanges || isHydratingRef.current || !hydrationCompleteRef.current) return;
 
@@ -365,108 +597,218 @@ function App() {
       .catch((error) => {
         console.error("Erro ao salvar dados no Firestore:", error);
       });
-    }, [user, transactions, bills, categories, shiftState, isLoadingData, workDays, plannedWorkDates, monthlySalaryGoal, openingBalances, hasLoadedData, hasPendingChanges]);
+  }, [transactions, bills, categories, shiftState, workDays, plannedWorkDates, monthlySalaryGoal, openingBalances, user, isLoadingData, hasLoadedData, hasPendingChanges]);
 
-  // Shift Timer (cronômetro simplificado)
-  useEffect(() => {
-    if (!shiftState.isActive) {
-      clearShiftTimer();
-      shiftStartRef.current = null;
-      elapsedBaseRef.current = 0;
-      return;
-    }
+  const stats = useMemo(() => {
+    const currentMonthKey = getCurrentMonthKey();
+    const filterCurrentMonth = (dateStr: string) => extractMonthKey(dateStr) === currentMonthKey;
 
-    if (shiftState.isPaused) {
-      clearShiftTimer();
-      shiftStartRef.current = null;
-      elapsedBaseRef.current = shiftState.elapsedSeconds;
-      return;
-    }
+    const currentMonthTransactions = transactions.filter(t => filterCurrentMonth(t.date));
+    const currentMonthIncomes = currentMonthTransactions.filter(t => t.type === TransactionType.INCOME);
+    const currentMonthExpenses = currentMonthTransactions.filter(t => t.type === TransactionType.EXPENSE);
 
-    // Ativo e rodando
-    clearShiftTimer();
-    const baselineStart = shiftState.startTime ?? Date.now();
-    const deltaFromStart = Math.max(0, Math.floor((Date.now() - baselineStart) / 1000));
-    const normalizedElapsed = Math.max(shiftState.elapsedSeconds, elapsedBaseRef.current + deltaFromStart);
+    const totalIncomes = currentMonthIncomes.reduce((sum, t) => sum + t.amount, 0);
+    const totalExpenses = currentMonthExpenses.reduce((sum, t) => sum + t.amount, 0);
+    const netProfitFinance = totalIncomes - totalExpenses;
 
-    if (normalizedElapsed !== shiftState.elapsedSeconds) {
-      elapsedBaseRef.current = normalizedElapsed;
-      setShiftState(prev => ({ ...prev, elapsedSeconds: normalizedElapsed }));
-    } else {
-      elapsedBaseRef.current = shiftState.elapsedSeconds;
-    }
+    const shiftEarningsTotal = safeNumber(shiftState.earnings?.uber) + safeNumber(shiftState.earnings?.n99) + safeNumber(shiftState.earnings?.indrive) + safeNumber(shiftState.earnings?.private);
+    const shiftTotalExpenses = safeNumber(shiftState.expenses);
+    const netProfitShift = shiftEarningsTotal - shiftTotalExpenses;
 
-    shiftStartRef.current = Date.now();
+    const hasActiveShift = shiftState.isActive || shiftState.elapsedSeconds > 0 || shiftEarningsTotal > 0 || shiftTotalExpenses > 0;
+    const combinedNetProfit = hasActiveShift ? netProfitFinance + netProfitShift : netProfitFinance;
 
-    const intervalId = window.setInterval(() => {
-      if (!shiftStartRef.current) return;
-      const elapsedSinceResume = Math.max(0, Math.floor((Date.now() - shiftStartRef.current) / 1000));
-      const nextElapsed = elapsedBaseRef.current + elapsedSinceResume;
-      setShiftState(prev => ({ ...prev, elapsedSeconds: nextElapsed }));
-    }, 1000);
+    const minutesWorked =
+      hasActiveShift && shiftState.elapsedSeconds > 0
+        ? shiftState.elapsedSeconds / 60
+        : 0;
 
-    timerRef.current = intervalId;
+    const hrsWorked = minutesWorked / 60;
+    const netPerHour = hrsWorked > 0 ? combinedNetProfit / hrsWorked : 0;
 
-    return () => {
-      clearShiftTimer();
-    };
-  }, [shiftState.isActive, shiftState.isPaused, shiftState.startTime]);
+    const netPerKm =
+      shiftState.km > 0 ? combinedNetProfit / shiftState.km : 0;
 
-  // Initial Check: Populate planned dates if empty
-  useEffect(() => {
-    if (!isLoadingData && user && workDays.length > 0) {
-      const today = new Date();
-      const currentMonthStr = `${today.getFullYear()}-${String(today.getMonth() + 1).padStart(2, '0')}`;
-      
-      const hasPlanForThisMonth = plannedWorkDates.some(d => d.startsWith(currentMonthStr));
-      
-      if (!hasPlanForThisMonth) {
-        const daysInMonth = new Date(today.getFullYear(), today.getMonth() + 1, 0).getDate();
-        const newDates = [...plannedWorkDates];
-        for (let i = 1; i <= daysInMonth; i++) {
-          const d = new Date(today.getFullYear(), today.getMonth(), i);
-          const dateStr = [d.getFullYear(), String(d.getMonth() + 1).padStart(2, '0'), String(d.getDate()).padStart(2, '0')].join('-');
-          if (workDays.includes(d.getDay())) {
-             newDates.push(dateStr);
-          }
-        }
-        if (newDates.length > plannedWorkDates.length) {
-          setPlannedWorkDates(newDates);
-        }
+    const minutesWorkedShift =
+      shiftState.elapsedSeconds > 0 ? shiftState.elapsedSeconds / 60 : 0;
+    const hrsWorkedShift = minutesWorkedShift / 60;
+    const netPerHourShift =
+      hasActiveShift && hrsWorkedShift > 0 ? netProfitShift / hrsWorkedShift : 0;
+
+    const baseWorkedKm = shiftState.km > 0 ? shiftState.km : 0;
+    const netPerKmShift =
+      hasActiveShift && baseWorkedKm > 0 ? netProfitShift / baseWorkedKm : 0;
+
+    const plannedDatesCurrentMonth = plannedWorkDates.filter(d => d.startsWith(currentMonthKey));
+    const totalWorkingDaysPlanned = countBusinessDays(plannedDatesCurrentMonth);
+
+    const todayStr = getTodayString();
+    const pastOrTodayPlanned = plannedDatesCurrentMonth.filter(d => d <= todayStr);
+    const daysAlreadyWorkedPlanned = countBusinessDays(pastOrTodayPlanned);
+
+    const effectiveMonthlyGoal = safeNumber(monthlySalaryGoal);
+    const remainingToMonthlyGoal = Math.max(0, effectiveMonthlyGoal - netProfitFinance);
+
+    const { 
+      totalBills,
+      effectiveOpeningBalance,
+      remainingBillsAfterCash,
+      totalSalaryGoal,
+      monthlyBillsAndSalary,
+      avgPerDay,
+      overdueAndTodayTotal,
+      overdueAfterCash,
+    } = computeMinimumForBills(
+      bills,
+      openingBalances,
+      monthlySalaryGoal,
+      undefined
+    );
+
+    const combinedGoal = effectiveMonthlyGoal + totalBills;
+    const combinedRemaining = Math.max(0, combinedGoal - (netProfitFinance + effectiveOpeningBalance));
+
+    const overdueAndTodayResult = computeMinimumForBills(
+      bills,
+      openingBalances,
+      monthlySalaryGoal,
+      (bill) => {
+        const billDateStr = bill.dueDate;
+        return billDateStr <= todayStr;
       }
-    }
-  }, [isLoadingData, user, workDays]); 
+    );
 
-  // --- Handlers ---
+    const dayOfMonth = new Date().getDate();
+    const daysInMonth = new Date(new Date().getFullYear(), new Date().getMonth() + 1, 0).getDate();
+    const daysRemainingIncludingToday = daysInMonth - dayOfMonth + 1;
+
+    const netProfitForGoals = netProfitFinance;
+    const effectiveBillsAfterCash = Math.max(0, totalBills - effectiveOpeningBalance);
+    const totalGoalForMonth = effectiveBillsAfterCash + effectiveMonthlyGoal;
+    const remainingGoalForMonth = Math.max(0, totalGoalForMonth - netProfitForGoals);
+
+    const dailyGoal =
+      daysRemainingIncludingToday > 0 ? remainingGoalForMonth / daysRemainingIncludingToday : remainingGoalForMonth;
+
+    const dailyGoalFrozen = dailyGoal;
+
+    const remainingForToday = dailyGoalFrozen;
+
+    const overdueAfterCashToday = overdueAndTodayResult.overdueAfterCash;
+    const salaryShare =
+      totalGoalForMonth > 0
+        ? (effectiveMonthlyGoal / totalGoalForMonth) * dailyGoalFrozen
+        : 0;
+    const billsShare = dailyGoalFrozen - salaryShare;
+
+    const cashOnHand = netProfitFinance + Math.max(0, effectiveOpeningBalance);
+
+    const remainingTodayBills =
+      billsShare - Math.max(0, cashOnHand - salaryShare);
+
+    const remainingTodaySalary =
+      salaryShare - Math.max(0, cashOnHand - billsShare);
+
+    const accountsRemainingWithShift = Math.max(0, billsShare - combinedNetProfit);
+
+    const todayBills = bills.filter(b => b.dueDate === todayStr && !b.isPaid);
+    const todayBillsTotal = todayBills.reduce((sum, b) => sum + b.amount, 0);
+    const remainingAccountsToday = Math.max(0, todayBillsTotal - netProfitFinance);
+
+    const upcomingBills = bills
+      .filter(b => !b.isPaid)
+      .sort((a, b) => a.dueDate.localeCompare(b.dueDate))
+      .slice(0, 3);
+
+    return {
+      netProfit: combinedNetProfit,
+      netProfitFinance,
+      netProfitShift,
+      totalIncomes,
+      totalExpenses,
+      netPerHour,
+      netPerKm,
+      netPerHourShift,
+      netPerKmShift,
+      hoursWorked: hrsWorked,
+      hoursWorkedShift: hrsWorkedShift,
+      kmDriven: shiftState.km,
+      totalWorkingDaysPlanned,
+      daysAlreadyWorkedPlanned,
+      remainingToMonthlyGoal,
+      totalBills,
+      openingBalance: effectiveOpeningBalance,
+      remainingBillsAfterCash,
+      overdueAndTodayTotal,
+      overdueAfterCash,
+      monthlyBillsAndSalary,
+      avgPerDay,
+      monthlySalaryGoal: effectiveMonthlyGoal,
+      monthlyGoalTotal: combinedGoal,
+      monthlyGoalRemaining: combinedRemaining,
+      dailyGoal,
+      remainingForToday,
+      remainingAccountsToday,
+      remainingSalaryToday: Math.max(0, remainingTodaySalary),
+      remainingTodayBills: Math.max(0, remainingTodayBills),
+      accountsRemainingWithShift,
+      cashOnHand,
+      shiftEarningsTotal,
+      shiftTotalExpenses,
+      overdueAfterCashToday,
+      todayBillsTotal,
+      upcomingBills,
+      totalGoalForMonth,
+      remainingGoalForMonth,
+      S: effectiveMonthlyGoal,
+    };
+  }, [transactions, bills, shiftState, workDays, plannedWorkDates, monthlySalaryGoal, openingBalances]);
 
   const handleLogout = async () => {
     await logoutUser();
-    setHasLoadedData(false);
-    setHasPendingChanges(false);
-    setTransactions(INITIAL_TRANSACTIONS);
-    setBills(INITIAL_BILLS);
+    clearShiftTimer();
+    setTransactions([]);
+    setBills([]);
     setCategories(DEFAULT_CATEGORIES);
     setShiftState(createInitialShiftState());
-    shiftStartRef.current = null;
-    elapsedBaseRef.current = 0;
     setWorkDays([1, 2, 3, 4, 5, 6]);
     setPlannedWorkDates([]);
     setMonthlySalaryGoal(0);
+    setOpeningBalances({});
   };
 
-  const handleAddCategory = (name: string, type: 'income' | 'expense' | 'both') => {
+  const handleAddCategory = (name: string) => {
     if (!name) return;
-    const newCat: Category = {
-      id: `cat_${Date.now()}_${Math.random().toString(36).substr(2,5)}`,
-      name,
-      type,
-      driverId: user?.uid
+    const trimmed = name.trim();
+    if (!trimmed) return;
+    if (categories.some(c => c.name.toLowerCase() === trimmed.toLowerCase())) return;
+
+    const newCategory: Category = {
+      id: `cat_${Date.now()}`,
+      name: trimmed,
+      type: 'both',
+      driverId: user?.uid || '',
     };
-    setCategories(prev => [...prev, newCat]);
+
+    setCategories(prev => [...prev, newCategory]);
   };
 
-  const handleEditCategory = (id: string, name: string, type: 'income' | 'expense' | 'both') => {
-    setCategories(prev => prev.map(c => c.id === id ? { ...c, name, type } : c));
+  const handleEditCategory = (id: string, newName: string) => {
+    if (!newName) return;
+    const trimmed = newName.trim();
+    if (!trimmed) return;
+    if (categories.some(c => c.name.toLowerCase() === trimmed.toLowerCase() && c.id !== id)) return;
+
+    setCategories(prev =>
+      prev.map(c => (c.id === id ? { ...c, name: trimmed } : c))
+    );
+
+    setTransactions(prev =>
+      prev.map(t => (t.categoryId === id ? { ...t, category: trimmed } : t))
+    );
+    setBills(prev =>
+      prev.map(b => (b.categoryId === id ? { ...b, category: trimmed } : b))
+    );
   };
 
   const handleDeleteCategory = (id: string) => {
@@ -479,49 +821,73 @@ function App() {
     setEntryModalOpen(true);
   };
 
-  const handleEntrySave = (value: number, description?: string, expenseCategory?: ExpenseCategory) => {
-    if (!entryCategory) return;
-
+  const handleShiftValueChange = (category: 'uber' | '99' | 'indrive' | 'private' | 'km' | 'expense', value: number, description?: string) => {
     setShiftState(prev => {
-      const newState = { ...prev };
-      if (entryCategory === 'uber') newState.earnings.uber = value;
-      else if (entryCategory === '99') newState.earnings.n99 = value;
-      else if (entryCategory === 'indrive') newState.earnings.indrive = value;
-      else if (entryCategory === 'private') newState.earnings.private = value;
-      else if (entryCategory === 'km') newState.km += value;
-      else if (entryCategory === 'expense') {
-        newState.expenses += value;
-        if (description && expenseCategory) {
-          newState.expenseList = [
-            ...newState.expenseList,
-            { amount: value, description, category: expenseCategory, timestamp: Date.now() }
-          ];
+      const newState: ShiftState = { ...prev };
+
+      if (category === 'km') {
+        newState.km = Math.max(0, (newState.km || 0) + value);
+      } else if (category === 'expense') {
+        const newExpense = {
+          id: `exp_${Date.now()}`,
+          amount: value,
+          description: description || 'Despesa de turno',
+          category: 'Outros' as ExpenseCategory,
+        };
+        newState.expenseList = [...(newState.expenseList || []), newExpense];
+        newState.expenses = (newState.expenses || 0) + value;
+      } else {
+        if (!newState.earnings) {
+          newState.earnings = { uber: 0, n99: 0, indrive: 0, private: 0 };
+        }
+        if (category === 'uber') {
+          newState.earnings.uber = (newState.earnings.uber || 0) + value;
+        } else if (category === '99') {
+          newState.earnings.n99 = (newState.earnings.n99 || 0) + value;
+        } else if (category === 'indrive') {
+          newState.earnings.indrive = (newState.earnings.indrive || 0) + value;
+        } else if (category === 'private') {
+          newState.earnings.private = (newState.earnings.private || 0) + value;
         }
       }
+
       return newState;
     });
   };
 
-  const handleManualKmAdjust = () => {
-    const newKmStr = window.prompt("Ajustar KM total do turno:", shiftState.km.toFixed(1));
-    if (newKmStr === null) return;
-    const parsed = parseFloat(newKmStr.replace(',', '.'));
-    if (Number.isNaN(parsed) || parsed < 0) return;
-    setShiftState(prev => ({ ...prev, km: parsed }));
+  const formatElapsedTime = (seconds: number): string => {
+    if (!Number.isFinite(seconds) || seconds < 0) seconds = 0;
+    const hrs = Math.floor(seconds / 3600);
+    const mins = Math.floor((seconds % 3600) / 60);
+    const secs = Math.floor(seconds % 60);
+    return `${String(hrs).padStart(2, '0')}:${String(mins).padStart(2, '0')}:${String(secs).padStart(2, '0')}`;
   };
 
   const handleStartShift = () => {
-    const now = Date.now();
-    shiftStartRef.current = now;
+    if (shiftState.isActive && !shiftState.isPaused) return;
+
+    clearShiftTimer();
     elapsedBaseRef.current = 0;
-    setShiftState(prev => ({ ...prev, isActive: true, isPaused: false, startTime: now, elapsedSeconds: 0 }));
+
+    const startTime = Date.now();
+    shiftStartRef.current = startTime;
+
+    setShiftState({
+      isActive: true,
+      isPaused: false,
+      startTime,
+      elapsedSeconds: 0,
+      earnings: { uber: 0, n99: 0, indrive: 0, private: 0 },
+      expenses: 0,
+      expenseList: [],
+      km: 0,
+    });
   };
 
   const handlePauseShift = () => {
     setShiftState(prev => {
       if (!prev.isActive) return prev;
 
-      // Retomar
       if (prev.isPaused) {
         const resumeNow = Date.now();
         shiftStartRef.current = resumeNow;
@@ -529,26 +895,30 @@ function App() {
         return { ...prev, isPaused: false, startTime: resumeNow };
       }
 
-      // Pausar
       const startTs = shiftStartRef.current ?? prev.startTime ?? Date.now();
       const elapsedSinceStart = Math.max(0, Math.floor((Date.now() - startTs) / 1000));
       const updatedElapsed = Math.max(
         prev.elapsedSeconds,
         elapsedBaseRef.current + elapsedSinceStart
       );
+
       elapsedBaseRef.current = updatedElapsed;
       shiftStartRef.current = null;
       clearShiftTimer();
+
       return { ...prev, isPaused: true, elapsedSeconds: updatedElapsed };
     });
   };
 
   const handleStopShift = () => {
     clearShiftTimer();
+
     const finalizeElapsed = (prev: ShiftState) => {
       if (!prev.isActive || prev.isPaused) return prev.elapsedSeconds;
+
       const startTs = shiftStartRef.current ?? prev.startTime ?? Date.now();
       const elapsedSinceStart = Math.max(0, Math.floor((Date.now() - startTs) / 1000));
+
       return Math.max(prev.elapsedSeconds, elapsedBaseRef.current + elapsedSinceStart);
     };
 
@@ -563,314 +933,49 @@ function App() {
     setIsShiftModalOpen(true);
   };
 
-  const handleEditStartTime = () => {
-    if (!shiftState.isActive) return;
-    const currentStart = shiftState.startTime ? new Date(shiftState.startTime) : new Date();
-    const defaultTime = `${String(currentStart.getHours()).padStart(2, '0')}:${String(currentStart.getMinutes()).padStart(2, '0')}`;
-    const newTimeStr = window.prompt("Ajustar horário de início (HH:mm):", defaultTime);
-
-    if (newTimeStr && /^\d{2}:\d{2}$/.test(newTimeStr)) {
-      const [h, m] = newTimeStr.split(':').map(Number);
-      const newStartDate = new Date();
-      newStartDate.setHours(h, m, 0, 0);
-      const recalculatedElapsed = Math.max(0, Math.floor((Date.now() - newStartDate.getTime()) / 1000));
-      // Mantemos a base zerada para evitar somar duas vezes o intervalo recém calculado;
-      // o efeito do cronômetro normalizará a contagem a partir desse novo start.
-      elapsedBaseRef.current = 0;
-      shiftStartRef.current = shiftState.isPaused ? null : Date.now();
-
-      setShiftState(prev => ({
-        ...prev,
-        startTime: newStartDate.getTime(),
-        elapsedSeconds: recalculatedElapsed
-      }));
-    }
+  const handleResetShift = () => {
+    clearShiftTimer();
+    shiftStartRef.current = null;
+    elapsedBaseRef.current = 0;
+    setShiftState(createInitialShiftState());
   };
 
-  const formatTime = (seconds: number) => {
-    const h = Math.floor(seconds / 3600);
-    const m = Math.floor((seconds % 3600) / 60);
-    return `${h}h ${m.toString().padStart(2, '0')}m`;
+  const handleEditStartTime = (newTime: string) => {
+    const [hStr, mStr] = newTime.split(':');
+    const h = parseInt(hStr, 10);
+    const m = parseInt(mStr, 10);
+
+    if (Number.isNaN(h) || Number.isNaN(m)) return;
+
+    const now = new Date();
+    const newStartDate = new Date(
+      now.getFullYear(),
+      now.getMonth(),
+      now.getDate(),
+      h,
+      m,
+      0,
+      0
+    );
+
+    const newStartMs = newStartDate.getTime();
+    const nowMs = Date.now();
+
+    const recalculatedElapsed = Math.max(
+      0,
+      Math.floor((nowMs - newStartMs) / 1000)
+    );
+
+    elapsedBaseRef.current = 0;
+    shiftStartRef.current = shiftState.isPaused ? null : nowMs;
+
+    setShiftState(prev => ({
+      ...prev,
+      startTime: newStartMs,
+      elapsedSeconds: recalculatedElapsed,
+    }));
   };
 
-  const formatCurrency = (val: number, forceShow = false) => {
-    if (!showValues && !forceShow) return 'R$ ****';
-    return new Intl.NumberFormat('pt-BR', { style: 'currency', currency: 'BRL' }).format(val);
-  };
-
-  const currentMonthKey = useMemo(() => getTodayString().substring(0, 7), []);
-
-  useEffect(() => {
-    setOpeningBalanceInput(formatCurrencyPtBr(openingBalances[currentMonthKey] || 0));
-  }, [openingBalances, currentMonthKey]);
-
-  // --- SMART CALCULATIONS ---
-  const stats = useMemo(() => {
-    const todayStr = getTodayString();
-    const currentMonthPrefix = todayStr.substring(0, 7); // YYYY-MM
-    
-    // Shift & Basic Income
-    const currentShiftEarnings = shiftState.earnings.uber + shiftState.earnings.n99 + shiftState.earnings.indrive + shiftState.earnings.private;
-    const activeShiftExpenses = shiftState.expenses;
-
-    // Enquanto o turno está ativo ou pausado, o painel de controle não deve incorporar os números do turno
-    // nos cálculos financeiros; somente após o encerramento (quando o turno for salvo) os lançamentos serão
-    // enviados ao financeiro. A aba de Turno continua usando os valores do turno em andamento.
-    const shiftClosedForFinance = !(shiftState.isActive || shiftState.isPaused || isShiftModalOpen);
-    const effectiveShiftEarningsFinance = shiftClosedForFinance ? currentShiftEarnings : 0;
-    const effectiveShiftExpensesFinance = shiftClosedForFinance ? activeShiftExpenses : 0;
-
-    const incomeTransactionsThisMonth = transactions
-      .filter(t => t.type === TransactionType.INCOME && t.date.startsWith(currentMonthPrefix));
-    const expenseTransactionsThisMonth = transactions
-      .filter(t => t.type === TransactionType.EXPENSE && t.date.startsWith(currentMonthPrefix));
-
-    // Filtramos as contas do mês antes de usá-las nos cálculos de despesas
-    const billsThisMonth = bills.filter(b => b.dueDate.startsWith(currentMonthPrefix));
-
-    const monthlyIncomeFromTransactions = incomeTransactionsThisMonth.reduce((acc, curr) => acc + curr.amount, 0);
-    const monthlyExpensesFromTransactions = expenseTransactionsThisMonth.reduce((acc, curr) => acc + curr.amount, 0);
-    const monthlyExpensesFromBillsPaid = billsThisMonth
-      .filter(b => b.isPaid)
-      .reduce((acc, b) => acc + b.amount, 0);
-
-    // Painel de controle (financeiro) usa apenas lançamentos fechados + turno encerrado
-    const totalIncomeFinance = monthlyIncomeFromTransactions + effectiveShiftEarningsFinance;
-    const totalExpenseFinance = monthlyExpensesFromTransactions + monthlyExpensesFromBillsPaid + effectiveShiftExpensesFinance;
-    const netProfitFinance = totalIncomeFinance - totalExpenseFinance;
-
-    // Aba de turno considera o turno em andamento
-    const totalIncomeShift = monthlyIncomeFromTransactions + currentShiftEarnings;
-    const totalExpenseShift = monthlyExpensesFromTransactions + monthlyExpensesFromBillsPaid + activeShiftExpenses;
-    const netProfitShift = totalIncomeShift - totalExpenseShift;
-
-    const monthlyNetProfit = monthlyIncomeFromTransactions - (monthlyExpensesFromTransactions + monthlyExpensesFromBillsPaid);
-    const profitMargin = totalIncomeFinance > 0 ? (netProfitFinance / totalIncomeFinance) * 100 : 0;
-    
-    // Monthly Vars
-    const totalMonthlyExpenses = billsThisMonth.reduce((acc, b) => acc + b.amount, 0);
-    const D = totalMonthlyExpenses;
-
-    const savedIncomeThisMonth = monthlyIncomeFromTransactions;
-
-    const F = savedIncomeThisMonth + effectiveShiftEarningsFinance;
-    const S = monthlySalaryGoal || 0;
-
-    // Daily Logic (STABLE GOAL)
-    const savedIncomeToday = transactions
-      .filter(t => t.type === TransactionType.INCOME && t.date === todayStr)
-      .reduce((acc, t) => acc + t.amount, 0);
-    
-    // Para metas do turno, o faturamento do dia inclui o turno em andamento
-    const F_today = savedIncomeToday + currentShiftEarnings;
-
-    // Monthly Status Calc (progress bar usa faturamento bruto + ganhos do turno ativo)
-    const salaryAccumulatedForProgress = Math.max(0, F);
-    const salaryRemainingForProgress = S > 0 ? Math.max(0, S - salaryAccumulatedForProgress) : 0;
-
-    // Daily Target Calc (meta do dia congelada no início, sem os ganhos do turno ativo)
-    const salaryAccumulatedStart = Math.max(0, savedIncomeThisMonth);
-    const salaryRemainingStart = S > 0 ? Math.max(0, S - salaryAccumulatedStart) : 0;
-
-    const countWorkDays = (startStr: string, endStr: string) => {
-      return plannedWorkDates.filter(d => d >= startStr && d <= endStr).length;
-    };
-
-    const unpaidBillsThisMonth = billsThisMonth.filter(b => !b.isPaid).sort((a,b) => a.dueDate.localeCompare(b.dueDate));
-    let lastExpenseDate = todayStr;
-    if (unpaidBillsThisMonth.length > 0) {
-      lastExpenseDate = unpaidBillsThisMonth[unpaidBillsThisMonth.length - 1].dueDate;
-    } else {
-      const endOfMonth = new Date(new Date().getFullYear(), new Date().getMonth() + 1, 0);
-      lastExpenseDate = [endOfMonth.getFullYear(), String(endOfMonth.getMonth() + 1).padStart(2,'0'), String(endOfMonth.getDate()).padStart(2,'0')].join('-');
-    }
-    if (lastExpenseDate < todayStr) lastExpenseDate = todayStr;
-
-    const pendingBillsTotalMonth = unpaidBillsThisMonth.reduce((acc, b) => acc + b.amount, 0);
-    const openingBalanceForMonth = openingBalances[currentMonthPrefix] || 0;
-    // Bill coverage: use monthly net profit (including current shift earnings/expenses) plus the opening balance
-    // Cobertura de contas para o painel (financeiro) — ignora turno em andamento
-    const { cashForBills: cashForBillsDashboard, minimumForBills: minimumForBillsDashboard } = computeMinimumForBills(
-      pendingBillsTotalMonth,
-      openingBalanceForMonth,
-      netProfitFinance,
-    );
-
-    // Cobertura de contas para a aba de turno — considera o turno atual
-    const { cashForBills: cashForBillsShift, minimumForBills: minimumForBillsShift } = computeMinimumForBills(
-      pendingBillsTotalMonth,
-      openingBalanceForMonth,
-      netProfitShift,
-    );
-
-    // Mantemos o alvo diário de contas estável (sem os ganhos do turno em andamento),
-    // mas exibimos o valor faltante para contas já descontando o turno atual em uma célula dedicada.
-    const { minimumForBills: minimumForBillsShiftFrozen } = computeMinimumForBills(
-      pendingBillsTotalMonth,
-      openingBalanceForMonth,
-      netProfitFinance,
-    );
-
-    const cashOnHand = openingBalanceForMonth + netProfitFinance;
-
-    const daysRemainingForExpenses = Math.max(1, countWorkDays(todayStr, lastExpenseDate));
-    // O mínimo diário de contas usa o cenário congelado (sem os ganhos do turno em andamento)
-    // para manter o valor cheio, enquanto o "falta p/ meta contas" considera o turno atual.
-    const expenseTargetToday = minimumForBillsShiftFrozen > 0 ? minimumForBillsShiftFrozen / daysRemainingForExpenses : 0;
-
-    const endOfMonth = new Date(new Date().getFullYear(), new Date().getMonth() + 1, 0);
-    const endOfMonthStr = [endOfMonth.getFullYear(), String(endOfMonth.getMonth() + 1).padStart(2,'0'), String(endOfMonth.getDate()).padStart(2,'0')].join('-');
-    const daysRemainingForSalary = Math.max(1, countWorkDays(todayStr, endOfMonthStr));
-
-    const salaryTargetToday = S > 0 ? salaryRemainingStart / daysRemainingForSalary : 0;
-
-
-    let dailyGoal = 0;
-    if (S > 0) {
-      dailyGoal = Math.max(expenseTargetToday, salaryTargetToday);
-    } else {
-      dailyGoal = expenseTargetToday;
-    }
-
-    // NEW LOGIC: Remaining to Goal
-    const remainingAccountsToday = Math.max(0, expenseTargetToday - F_today);
-    const remainingSalaryToday = Math.max(0, salaryTargetToday - F_today);
-
-    let remainingForToday = Math.max(0, dailyGoal - F_today);
-    let isGoalMet = F_today >= dailyGoal;
-    
-    // Status Color
-    let dailyStatusColor = "bg-emerald-600";
-    let dailyStatusMessage = "Parabéns! Você bateu a meta de hoje.";
-
-    if (!isGoalMet) {
-      if (minimumForBillsShift > 0 && F_today < expenseTargetToday) {
-        dailyStatusColor = "bg-rose-600";
-        dailyStatusMessage = "Atenção: Mínimo para contas ainda não atingido.";
-      } else if (minimumForBillsShift === 0 && salaryRemainingStart > 0) {
-        dailyStatusColor = "bg-amber-500";
-        dailyStatusMessage = "Contas garantidas! Foque na meta salarial.";
-      } else {
-        dailyStatusColor = "bg-amber-500";
-        dailyStatusMessage = "Continue avançando na meta do dia.";
-      }
-    } else {
-        dailyStatusColor = "bg-emerald-600";
-        const surplus = F_today - dailyGoal;
-        dailyStatusMessage = surplus > 0
-          ? `Excelente! R$ ${formatCurrency(surplus, true)} acima da meta.`
-          : "Meta exata atingida!";
-    }
-
-    const remainingToMonthlyGoal = salaryRemainingForProgress;
-    const billsCovered = minimumForBillsDashboard === 0;
-    const salaryGoalMet = S > 0 ? remainingToMonthlyGoal === 0 : false;
-
-    let statusColor = "bg-emerald-600";
-    let statusMessage = "✅ Contas do mês garantidas com o lucro atual.";
-    let displayGoal = remainingToMonthlyGoal;
-
-    if (!billsCovered) {
-      statusColor = "bg-rose-600";
-      statusMessage = `Faltam ${formatCurrency(minimumForBillsDashboard, true)} para garantir as contas do mês!`;
-    } else if (S > 0 && !salaryGoalMet) {
-      statusColor = "bg-amber-500";
-      statusMessage = `Contas cobertas. Faltam ${formatCurrency(remainingToMonthlyGoal, true)} para o salário.`;
-    } else if (S > 0 && salaryGoalMet) {
-      statusMessage = "✅ Contas do mês garantidas com o lucro atual. Meta do mês atingida!";
-    }
-
-    const pendingBillsTotalAll = bills.filter(b => !b.isPaid).reduce((acc, b) => acc + b.amount, 0);
-    const remainingPlannedDates = plannedWorkDates.filter(d => d.startsWith(currentMonthPrefix) && d >= todayStr).sort();
-    const remainingDays = remainingPlannedDates.length;
-
-    return { 
-        totalIncome: totalIncomeFinance,
-        totalExpense: totalExpenseFinance,
-        netProfit: netProfitFinance,
-        profitMargin,
-        displayGoal, D, F, S, statusColor, statusMessage,
-        minimumForBills: minimumForBillsDashboard,
-        cashForBills: cashForBillsDashboard,
-        minimumForBillsShift,
-        minimumForBillsShiftFrozen,
-        accountsRemainingWithShift: remainingAccountsToday,
-        cashForBillsShift,
-        openingBalanceForMonth, monthlyNetProfit, pendingBillsTotalMonth, remainingToMonthlyGoal,
-        dailyGoal, expenseTargetToday, salaryTargetToday, F_today, dailyStatusColor, dailyStatusMessage,
-        remainingAccountsToday, remainingSalaryToday,
-        remainingForToday, isGoalMet,
-        pendingBillsTotalAll, remainingDays,
-        totalExpensesThisMonth: totalExpenseFinance,
-        cashOnHand,
-    };
-  }, [transactions, bills, plannedWorkDates, monthlySalaryGoal, shiftState, openingBalances, isShiftModalOpen]);
-
-  // ... (Other useMemos: billsSummary, filteredHistory, historySummary, pieData - Unchanged)
-  const billsSummary = useMemo(() => ({
-    paid: bills.filter(b => b.isPaid).reduce((acc, b) => acc + b.amount, 0),
-    pending: bills.filter(b => !b.isPaid).reduce((acc, b) => acc + b.amount, 0)
-  }), [bills]);
-
-  const upcomingBills = useMemo(() => (
-    bills
-      .filter(b => !b.isPaid)
-      .slice()
-      .sort((a, b) => a.dueDate.localeCompare(b.dueDate))
-      .slice(0, 3)
-  ), [bills]);
-
-  const filteredHistory = useMemo(() => {
-    const today = new Date();
-    today.setHours(0, 0, 0, 0);
-    let start: Date | null = null;
-    let end: Date | null = new Date(today);
-    end.setHours(23, 59, 59, 999);
-
-    if (historyRange === 'today') start = today;
-    else if (historyRange === 'week') {
-      const d = new Date(today);
-      const day = d.getDay();
-      const diff = d.getDate() - day + (day === 0 ? -6 : 1);
-      d.setDate(diff);
-      start = d;
-    } else if (historyRange === 'month') {
-      const d = new Date(today);
-      d.setDate(1);
-      start = d;
-    } else if (historyRange === 'custom') {
-      if (historyCustomStart && historyCustomEnd) {
-        start = parseDateFromInput(historyCustomStart);
-        end = parseDateFromInput(historyCustomEnd);
-        end.setHours(23, 59, 59, 999);
-      } else return transactions;
-    } else return transactions;
-
-    return transactions.filter(t => {
-      const tDate = parseDateFromInput(t.date);
-      return start ? (tDate >= start && tDate <= end!) : true;
-    }).sort((a, b) => new Date(b.date).getTime() - new Date(a.date).getTime());
-  }, [transactions, historyRange, historyCustomStart, historyCustomEnd]);
-
-  const historySummary = useMemo(() => {
-    const income = filteredHistory.filter(t => t.type === TransactionType.INCOME).reduce((acc, t) => acc + t.amount, 0);
-    const expense = filteredHistory.filter(t => t.type === TransactionType.EXPENSE).reduce((acc, t) => acc + t.amount, 0);
-    return { income, expense, balance: income - expense };
-  }, [filteredHistory]);
-
-  const currentShiftTotal = shiftState.earnings.uber + shiftState.earnings.n99 + shiftState.earnings.indrive + shiftState.earnings.private;
-  const currentShiftLiquid = currentShiftTotal - shiftState.expenses;
-  const currentShiftMinutes = Math.floor(shiftState.elapsedSeconds / 60);
-  const currentShiftRph = (currentShiftMinutes > 0) ? currentShiftTotal / (currentShiftMinutes / 60) : 0;
-  const currentShiftRpk = shiftState.km > 0 ? currentShiftTotal / shiftState.km : 0;
-  const currentShiftHoursPrecise = shiftState.elapsedSeconds / 3600;
-
-  const pieData = useMemo(() => [
-    { name: 'Ganhos', value: stats.totalIncome, color: '#3b82f6' },
-    { name: 'Despesas', value: stats.totalExpense, color: '#f43f5e' }
-  ], [stats]);
-
-  // Handlers
   const handleAddTransaction = (data: any) => {
     const newTransaction: Transaction = { id: Math.random().toString(36).substr(2, 9), ...data };
     setTransactions(prev => [newTransaction, ...prev]);
@@ -888,16 +993,28 @@ function App() {
       type: TransactionType.EXPENSE,
       amount: exp.amount,
       description: `${exp.description} (Turno)`,
-      category: exp.category, 
+      category: exp.category,
       date: data.date
     }));
     
     const newTransactions = [incomeTransaction, ...expenseTransactions, ...transactions];
     setTransactions(newTransactions);
-    const resetShiftState = { isActive: false, isPaused: false, startTime: null, elapsedSeconds: 0, earnings: { uber: 0, n99: 0, indrive: 0, private: 0 }, expenses: 0, expenseList: [], km: 0 };
+    
+    const resetShiftState = createInitialShiftState();
     setShiftState(resetShiftState);
-    shiftStartRef.current = null;
-    elapsedBaseRef.current = 0;
+
+    if (user) {
+      saveAppData({ 
+        transactions: newTransactions,
+        bills,
+        categories,
+        shiftState: resetShiftState,
+        workDays,
+        plannedWorkDates,
+        monthlySalaryGoal,
+        openingBalances,
+      }, user.uid);
+    }
   };
 
   const handleSaveBill = (billData: Omit<Bill, 'id'>) => {
@@ -910,509 +1027,1091 @@ function App() {
     setIsBillModalOpen(false);
   };
 
-  const handleEditBill = (bill: Bill) => { setEditingBill(bill); setIsBillModalOpen(true); };
+  const handleEditBillClick = (bill: Bill) => { setEditingBill(bill); setIsBillModalOpen(true); };
   const toggleBillPaid = (id: string) => { setBills(prev => prev.map(b => (b.id === id ? { ...b, isPaid: !b.isPaid } : b))); };
   const handleDeleteBill = (id: string) => { setBills(prev => prev.filter(b => b.id !== id)); };
   const handleDeleteTransaction = (id: string) => { setTransactions(prev => prev.filter(t => t.id !== id)); };
 
-  const handleOpeningBalanceChange = (monthKey: string, value: number) => {
-    const safeValue = Number.isFinite(value) ? Math.max(0, value) : 0;
-    setOpeningBalances(prev => ({ ...prev, [monthKey]: safeValue }));
+  const filteredHistory = useMemo(() => {
+    return filterTransactionsByRange(transactions, historyRange, historyCustomStart, historyCustomEnd);
+  }, [transactions, historyRange, historyCustomStart, historyCustomEnd]);
+
+  const pieData = useMemo(() => {
+    const expenseByCategory: { [key: string]: number } = {};
+    bills.forEach(bill => {
+      if (!bill.isPaid) {
+        const catName = bill.category || 'Outros';
+        if (!expenseByCategory[catName]) expenseByCategory[catName] = 0;
+        expenseByCategory[catName] += bill.amount;
+      }
+    });
+
+    return Object.entries(expenseByCategory).map(([name, value]) => ({
+      name,
+      value,
+    }));
+  }, [bills]);
+
+  const COLORS = ['#F97316', '#22C55E', '#3B82F6', '#8B5CF6', '#EC4899', '#EAB308', '#0EA5E9'];
+
+  const hasActiveShift = shiftState.isActive || shiftState.elapsedSeconds > 0 || (shiftState.earnings && (
+    shiftState.earnings.uber > 0 ||
+    shiftState.earnings.n99 > 0 ||
+    shiftState.earnings.indrive > 0 ||
+    shiftState.earnings.private > 0
+  ));
+
+  const shiftStatusLabel = !shiftState.isActive
+    ? 'Nenhum turno ativo'
+    : shiftState.isPaused
+      ? 'Turno pausado'
+      : 'Turno em andamento';
+
+  const shiftStatusColor = !shiftState.isActive
+    ? 'bg-slate-700 text-slate-100'
+    : shiftState.isPaused
+      ? 'bg-amber-500 text-black'
+      : 'bg-emerald-500 text-white';
+
+  const remainingDailyGoal = stats.remainingForToday;
+  const remainingSalaryToday = stats.remainingSalaryToday;
+  const remainingAccountsTodayShift = stats.accountsRemainingWithShift;
+
+  const handleHistoryRangeChange = (range: 'today' | 'week' | 'month' | 'all' | 'custom') => {
+    setHistoryRange(range);
+    if (range !== 'custom') {
+      setHistoryCustomStart('');
+      setHistoryCustomEnd('');
+    }
   };
 
-  const handleOpeningBalanceInputChange = (value: string) => {
-    const masked = formatCurrencyInputMask(value);
-    setOpeningBalanceInput(masked);
-  };
-
-  const persistOpeningBalance = () => {
-    const numeric = parseCurrencyInputToNumber(openingBalanceInput);
-    setOpeningBalanceInput(formatCurrencyPtBr(numeric));
-    handleOpeningBalanceChange(currentMonthKey, numeric);
-  };
-
-  if (authLoading) return <div className="min-h-screen bg-slate-900 flex items-center justify-center text-white">Carregando FinanDrive...</div>;
+  if (authLoading) {
+    return (
+      <div className="min-h-screen bg-slate-950 text-slate-50 flex items-center justify-center">
+        <div className="flex flex-col items-center gap-3">
+          <div className="w-10 h-10 border-4 border-blue-500/30 border-t-blue-500 rounded-full animate-spin" />
+          <p className="text-sm text-slate-300">Carregando FinanDrive...</p>
+        </div>
+      </div>
+    );
+  }
 
   if (!user) {
     return <Login />;
   }
 
-  const getCurrentEntryValue = () => {
-    if (!entryCategory) return 0;
-    switch (entryCategory) {
-      case 'uber': return shiftState.earnings.uber;
-      case '99': return shiftState.earnings.n99;
-      case 'indrive': return shiftState.earnings.indrive;
-      default: return 0;
-    }
-  };
+  const now = new Date();
+  const hours = now.getHours();
+  const greeting =
+    hours < 12 ? 'Bom dia' :
+    hours < 18 ? 'Boa tarde' :
+    'Boa noite';
 
   return (
-    <div className="h-screen bg-slate-100 flex flex-col md:flex-row font-sans text-slate-900 overflow-hidden">
-      {/* Mobile Header */}
-      {activeTab !== 'shift' && (
-        <div className="md:hidden bg-slate-900 shadow-md p-4 flex justify-between items-center z-30 shrink-0">
-          <div className="flex items-center justify-center w-full relative">
-            <button onClick={() => setMobileMenuOpen(!mobileMenuOpen)} className="absolute left-0 text-slate-300">
-              {mobileMenuOpen ? <CloseIcon /> : <Menu />}
-            </button>
-            <span className="font-bold text-lg text-white tracking-tight">FinanDrive</span>
-            <button onClick={() => setShowValues(!showValues)} className="absolute right-0 text-slate-400">
-              {showValues ? <Eye size={22} /> : <EyeOff size={22} />}
-            </button>
-          </div>
-        </div>
-      )}
-
-      {/* Sidebar */}
-      <aside className={`fixed inset-y-0 left-0 z-40 w-64 bg-slate-900 text-slate-300 transform transition-transform duration-300 ease-in-out md:relative md:translate-x-0 shrink-0 ${mobileMenuOpen ? 'translate-x-0' : '-translate-x-full'} ${activeTab === 'shift' ? 'md:w-20 lg:w-64' : ''}`}>
-        <div className="p-6 hidden md:flex flex-col justify-center items-center border-b border-slate-800 h-24">
-          <span className={`font-extrabold text-2xl tracking-tight text-white ${activeTab === 'shift' ? 'md:hidden lg:block' : ''}`}>FinanDrive</span>
-          {user.email && <span className="text-[10px] text-slate-500 mt-1 truncate max-w-full">{user.email}</span>}
-          {activeTab === 'shift' && <span className="hidden md:block lg:hidden font-bold text-white text-xl">FD</span>}
-        </div>
-        <nav className="p-4 space-y-2 mt-4 flex flex-col h-[calc(100%-8rem)]">
-          <button onClick={() => { setActiveTab('dashboard'); setMobileMenuOpen(false); }} className={`w-full flex items-center gap-3 px-4 py-3 rounded-xl transition-all font-medium ${activeTab === 'dashboard' ? 'bg-indigo-600 text-white shadow-lg shadow-indigo-900/20' : 'hover:bg-slate-800 hover:text-white'}`}>
-            <LayoutDashboard size={20} /><span className={`${activeTab === 'shift' ? 'md:hidden lg:inline' : ''}`}>Visão Geral</span>
-          </button>
-          <button onClick={() => { setActiveTab('shift'); setMobileMenuOpen(false); }} className={`w-full flex items-center gap-3 px-4 py-3 rounded-xl transition-all font-medium ${activeTab === 'shift' ? 'bg-indigo-600 text-white shadow-lg shadow-indigo-900/20' : 'hover:bg-slate-800 hover:text-white'}`}>
-            <Play size={20} /><span className={`${activeTab === 'shift' ? 'md:hidden lg:inline' : ''}`}>Turno</span>
-          </button>
-          <button onClick={() => { setActiveTab('reports'); setMobileMenuOpen(false); }} className={`w-full flex items-center gap-3 px-4 py-3 rounded-xl transition-all font-medium ${activeTab === 'reports' ? 'bg-indigo-600 text-white shadow-lg shadow-indigo-900/20' : 'hover:bg-slate-800 hover:text-white'}`}>
-            <PieChartIcon size={20} /><span className={`${activeTab === 'shift' ? 'md:hidden lg:inline' : ''}`}>Relatórios</span>
-          </button>
-          <button onClick={() => { setActiveTab('bills'); setMobileMenuOpen(false); }} className={`w-full flex items-center gap-3 px-4 py-3 rounded-xl transition-all font-medium ${activeTab === 'bills' ? 'bg-indigo-600 text-white shadow-lg shadow-indigo-900/20' : 'hover:bg-slate-800 hover:text-white'}`}>
-            <CalendarClock size={20} /><span className={`${activeTab === 'shift' ? 'md:hidden lg:inline' : ''}`}>Contas</span>
-          </button>
-          <button onClick={() => { setActiveTab('history'); setMobileMenuOpen(false); }} className={`w-full flex items-center gap-3 px-4 py-3 rounded-xl transition-all font-medium ${activeTab === 'history' ? 'bg-indigo-600 text-white shadow-lg shadow-indigo-900/20' : 'hover:bg-slate-800 hover:text-white'}`}>
-            <History size={20} /><span className={`${activeTab === 'shift' ? 'md:hidden lg:inline' : ''}`}>Histórico</span>
-          </button>
-          <div className="mt-auto space-y-2">
-            <button onClick={() => { setIsSettingsModalOpen(true); setMobileMenuOpen(false); }} className={`w-full flex items-center gap-3 px-4 py-3 rounded-xl transition-all font-medium hover:bg-slate-800 hover:text-white text-slate-300`}>
-              <Settings size={20} /><span className={`${activeTab === 'shift' ? 'md:hidden lg:inline' : ''}`}>Configurações</span>
-            </button>
-            <button onClick={handleLogout} className={`w-full flex items-center gap-3 px-4 py-3 rounded-xl transition-all font-medium hover:bg-rose-900/30 hover:text-rose-400 text-slate-400`}>
-              <LogOut size={20} /><span className={`${activeTab === 'shift' ? 'md:hidden lg:inline' : ''}`}>Sair</span>
-            </button>
-          </div>
-        </nav>
-      </aside>
-
-      <main className={`flex-1 overflow-y-auto h-full ${activeTab === 'shift' ? 'bg-slate-950' : 'p-4 md:p-8'} relative`}>
-        {activeTab === 'shift' ? (
-          <div className="min-h-full flex flex-col p-3 md:p-6 max-w-7xl mx-auto">
-            {/* Header Area */}
-            <div className="flex justify-between items-center mb-2 shrink-0">
-              <div className="flex items-center gap-3">
-                <button onClick={() => setMobileMenuOpen(true)} className="md:hidden text-slate-400 p-2 bg-slate-900 rounded-lg"><Menu size={24} /></button>
-                <div>
-                  <div className="text-slate-400 text-[10px] uppercase tracking-widest font-bold mb-0.5">Status</div>
-                  <div className={`flex items-center gap-2 text-sm md:text-base font-bold ${shiftState.isActive ? shiftState.isPaused ? 'text-yellow-400' : 'text-emerald-400 animate-pulse' : 'text-rose-400'}`}>
-                    <div className={`w-2 h-2 rounded-full ${shiftState.isActive ? shiftState.isPaused ? 'bg-yellow-400' : 'bg-emerald-400' : 'bg-rose-400'}`}></div>
-                    {shiftState.isActive ? shiftState.isPaused ? 'PAUSADO' : 'ONLINE' : 'OFFLINE'}
-                  </div>
-                </div>
-              </div>
-              <div className="flex items-center gap-4 text-right">
-                <button onClick={() => setShowValues(!showValues)} className="text-slate-500 hover:text-slate-300">{showValues ? <Eye size={20} /> : <EyeOff size={20} />}</button>
-                <div>
-                  <div className="text-slate-400 text-[10px] uppercase tracking-widest font-bold mb-0.5">Hoje</div>
-                  <div className="text-white text-sm font-medium">{new Date().toLocaleDateString('pt-BR', { day: '2-digit', month: 'short' })}</div>
-                </div>
-              </div>
-            </div>
-
-            {/* --- REVISED CARD: META DO DIA (FALTA R$ XXX) --- */}
-            <div className={`${stats.dailyStatusColor} rounded-xl p-3 text-white shadow-lg mb-2 relative overflow-hidden transition-colors duration-500 shrink-0 group`}>
-               <div className="absolute top-0 right-0 p-3 opacity-10 group-hover:opacity-20 transition-opacity"><Target size={64} /></div>
-               <div className="relative z-10">
-                 {/* Top Row: References */}
-                 <div className="flex justify-between text-[10px] opacity-80 font-bold uppercase tracking-wider mb-1">
-                    <span>Meta Total: {formatCurrency(stats.dailyGoal)}</span>
-                    <span>Faturado: {formatCurrency(stats.F_today)}</span>
-                 </div>
-
-                 {/* Center Hero: FALTA / RESTANTE */}
-                 <div className="text-center py-2">
-                    <p className="text-xs font-medium opacity-90 mb-0.5">
-                        {stats.isGoalMet ? 'Meta batida! Excedente:' : 'Falta para a meta:'}
-                    </p>
-                    <h3 className="text-4xl font-extrabold tracking-tight">
-                        {stats.isGoalMet
-                            ? `+ ${formatCurrency(stats.F_today - stats.dailyGoal, true)}`
-                            : formatCurrency(stats.remainingForToday, true)
-                        }
-                    </h3>
-                 </div>
-
-                 <div className="grid grid-cols-2 gap-2 mt-1 text-[11px] font-semibold">
-                    <div className="bg-white/10 rounded-lg px-2 py-1 flex justify-between items-center">
-                       <span className="opacity-80">Falta p/ meta salário</span>
-                       <span>{formatCurrency(stats.remainingSalaryToday, true)}</span>
-                    </div>
-                    <div className="bg-white/10 rounded-lg px-2 py-1 flex justify-between items-center">
-                       <span className="opacity-80">Falta p/ meta contas</span>
-                       <span>{formatCurrency(stats.accountsRemainingWithShift, true)}</span>
-                    </div>
-                 </div>
-                 
-                 <div className="w-full h-1.5 bg-black/20 rounded-full overflow-hidden mb-2 mt-1">
-                   <div className="h-full bg-white/90 rounded-full transition-all duration-1000" style={{ width: `${Math.min(100, (stats.F_today / (stats.dailyGoal || 1)) * 100)}%` }}></div>
-                 </div>
-
-                 <div className="bg-black/10 p-2 rounded-lg space-y-1">
-                    <div className="flex justify-between text-[10px] font-medium">
-                       <span className="opacity-80">Mínimo p/ contas:</span>
-                       <span>{formatCurrency(stats.expenseTargetToday)}</span>
-                    </div>
-                    {stats.S > 0 && (
-                      <div className="flex justify-between text-[10px] font-medium">
-                         <span className="opacity-80">Salário alvo:</span>
-                         <span>{formatCurrency(stats.salaryTargetToday)}</span>
-                      </div>
-                    )}
-                 </div>
-                 
-                 <p className="text-[10px] text-white/90 mt-2 font-medium flex items-center gap-1 justify-center">
-                   {stats.F_today < stats.expenseTargetToday && <AlertTriangle size={10} />}
-                   {stats.dailyStatusMessage}
-                 </p>
-               </div>
-            </div>
-
-            {/* COMPACT Grid for Time & Liquid (h-16) */}
-            <div className="grid grid-cols-2 gap-2 mb-2 shrink-0">
-              <div className="bg-slate-900/80 rounded-xl p-1 border border-slate-800 shadow-lg flex flex-col justify-center items-center relative group h-16">
-                <div className="text-slate-500 text-[9px] font-bold uppercase tracking-wider mb-0.5 flex items-center gap-1"><Clock size={9} /> Tempo</div>
-                <div className="text-xl font-mono font-bold text-white tracking-tighter">
-                  {formatTime(shiftState.elapsedSeconds).split(' ')[0]}
-                  <span className="text-xs text-slate-500 ml-0.5">{formatTime(shiftState.elapsedSeconds).split(' ').slice(1).join(' ')}</span>
-                </div>
-                {shiftState.isActive && <button onClick={handleEditStartTime} className="absolute top-1 right-1 p-1 text-white bg-indigo-600 hover:bg-indigo-500 rounded-lg shadow-md transition-colors z-20 border border-white/20"><Edit2 size={10} /></button>}
-              </div>
-              <div className="bg-gradient-to-br from-emerald-900 to-slate-900 rounded-xl p-1 border border-emerald-800/30 shadow-lg flex flex-col justify-center items-center relative overflow-hidden h-16">
-                <div className="text-emerald-400/80 text-[9px] font-bold uppercase tracking-wider mb-0.5 flex items-center gap-1"><Wallet size={9} /> Líquido</div>
-                <div className="text-xl font-bold text-emerald-400 tracking-tight">{formatCurrency(currentShiftLiquid)}</div>
-              </div>
-            </div>
-
-            {/* COMPACT Entry Cards (h-12) */}
-            <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-6 gap-2 mb-2 overflow-y-auto content-start pb-20">
-              <button onClick={() => handleOpenEntry('uber')} disabled={!shiftState.isActive || shiftState.isPaused} className="bg-black hover:bg-slate-900 border border-slate-800 rounded-xl px-2 h-12 flex items-center justify-between transition-all active:scale-95 disabled:opacity-40"><div className="flex items-center gap-1"><div className="bg-slate-800 px-1.5 py-0.5 rounded text-white font-bold text-[9px]">U</div><div className="text-slate-400 text-[9px] uppercase font-bold">Uber</div></div><div className="text-white font-bold text-sm">{formatCurrency(shiftState.earnings.uber)}</div></button>
-              <button onClick={() => handleOpenEntry('99')} disabled={!shiftState.isActive || shiftState.isPaused} className="bg-yellow-400 hover:bg-yellow-300 border border-yellow-500 rounded-xl px-2 h-12 flex items-center justify-between transition-all active:scale-95 disabled:opacity-40"><div className="flex items-center gap-1"><div className="bg-black/10 px-1.5 py-0.5 rounded text-black font-bold text-[9px]">99</div><div className="text-black/60 text-[9px] uppercase font-bold">99</div></div><div className="text-black font-bold text-sm">{formatCurrency(shiftState.earnings.n99)}</div></button>
-              <button onClick={() => handleOpenEntry('indrive')} disabled={!shiftState.isActive || shiftState.isPaused} className="bg-green-600 hover:bg-green-500 border border-green-500 rounded-xl px-2 h-12 flex items-center justify-between transition-all active:scale-95 disabled:opacity-40"><div className="flex items-center gap-1"><div className="bg-white/20 px-1.5 py-0.5 rounded text-white font-bold text-[9px]">In</div><div className="text-green-100 text-[9px] uppercase font-bold">InDr</div></div><div className="text-white font-bold text-sm">{formatCurrency(shiftState.earnings.indrive)}</div></button>
-              <button onClick={() => handleOpenEntry('private')} disabled={!shiftState.isActive || shiftState.isPaused} className="bg-slate-700 hover:bg-slate-600 border border-slate-600 rounded-xl px-2 h-12 flex items-center justify-between transition-all active:scale-95 disabled:opacity-40"><div className="flex items-center gap-1"><div className="bg-white/10 p-1 rounded text-white"><Wallet size={10} /></div><div className="text-slate-300 text-[9px] uppercase font-bold">Part.</div></div><div className="text-white font-bold text-sm">{formatCurrency(shiftState.earnings.private)}</div></button>
-              <button onClick={() => handleOpenEntry('km')} disabled={!shiftState.isActive || shiftState.isPaused} className="bg-blue-600 hover:bg-blue-500 border border-blue-500 rounded-xl px-2 h-12 flex items-center justify-between transition-all active:scale-95 disabled:opacity-40 relative">
-                <div className="flex items-center gap-1"><div className="bg-white/20 p-1 rounded text-white"><Gauge size={10} /></div><div className="text-blue-100 text-[9px] uppercase font-bold">KM</div></div><div className="text-white font-bold text-sm">{shiftState.km.toFixed(1)}</div>
-                <div
-                  className="absolute -top-1 -right-1 bg-white/80 text-blue-700 rounded-full p-1 shadow border border-blue-200"
-                  onClick={(e) => { e.stopPropagation(); handleManualKmAdjust(); }}
-                  role="button"
-                  tabIndex={0}
-                >
-                  <Edit2 size={12} />
-                </div>
-              </button>
-              <button onClick={() => handleOpenEntry('expense')} disabled={!shiftState.isActive || shiftState.isPaused} className="bg-rose-600 hover:bg-rose-500 border border-rose-500 rounded-xl px-2 h-12 flex items-center justify-between transition-all active:scale-95 disabled:opacity-40"><div className="flex items-center gap-1"><div className="bg-white/20 p-1 rounded text-white"><Fuel size={10} /></div><div className="text-rose-100 text-[9px] uppercase font-bold">Gasto</div></div><div className="text-white font-bold text-sm">{formatCurrency(shiftState.expenses)}</div></button>
-            </div>
-
-            {/* STICKY FOOTER ACTIONS */}
-            <div className="fixed bottom-0 left-0 right-0 p-3 bg-slate-950/80 backdrop-blur-md border-t border-slate-900 z-30 md:absolute md:bottom-0 md:bg-transparent md:border-none">
-                <div className="max-w-7xl mx-auto grid grid-cols-3 gap-2 mb-2">
-                    <div className="bg-slate-900/50 rounded-lg p-1 border border-slate-800 flex flex-col items-center justify-center"><div className="text-slate-400 text-[8px] font-medium uppercase tracking-wide">R$/H</div><div className="text-sm font-bold text-white">{formatCurrency(currentShiftRph)}</div></div>
-                    <div className="bg-slate-900/50 rounded-lg p-1 border border-slate-800 flex flex-col items-center justify-center"><div className="text-slate-400 text-[8px] font-medium uppercase tracking-wide">R$/KM</div><div className="text-sm font-bold text-white">{formatCurrency(currentShiftRpk)}</div></div>
-                    <div className="bg-slate-900/50 rounded-lg p-1 border border-slate-800 flex flex-col items-center justify-center"><div className="text-slate-400 text-[8px] font-medium uppercase tracking-wide">BRUTO</div><div className="text-sm font-bold text-blue-300">{formatCurrency(currentShiftTotal)}</div></div>
-                </div>
-                <div className="max-w-7xl mx-auto grid grid-cols-2 gap-3">
-                {!shiftState.isActive ? (
-                    <button onClick={handleStartShift} className="col-span-2 bg-indigo-600 hover:bg-indigo-500 text-white h-12 rounded-xl font-bold text-lg shadow-lg shadow-indigo-900/50 flex items-center justify-center gap-3 transition-all active:scale-[0.98] border border-indigo-500"><Play size={20} fill="currentColor" />INICIAR TURNO</button>
+    <div className="min-h-screen bg-slate-950 text-slate-50">
+      <div className="max-w-5xl mx-auto flex flex-col min-h-screen">
+        <header className="border-b border-slate-800 bg-slate-950/80 backdrop-blur-md sticky top-0 z-20">
+          <div className="px-4 py-3 flex items-center justify-between gap-4">
+            <div className="flex items-center gap-3">
+              <button
+                className="md:hidden inline-flex items-center justify-center w-9 h-9 rounded-full border border-slate-700 bg-slate-900 hover:bg-slate-800 transition-colors"
+                onClick={() => setMobileMenuOpen(prev => !prev)}
+              >
+                {mobileMenuOpen ? (
+                  <CloseIcon className="w-5 h-5 text-slate-100" />
                 ) : (
-                    <>
-                    <button onClick={handlePauseShift} className={`${shiftState.isPaused ? 'bg-emerald-600 hover:bg-emerald-500 border-emerald-500' : 'bg-slate-800 hover:bg-slate-700 border-slate-700'} text-white h-12 rounded-xl font-bold text-sm flex items-center justify-center gap-2 transition-all active:scale-[0.98] border shadow-lg`}>
-                        {shiftState.isPaused ? <Play size={18} fill="currentColor" /> : <Pause size={18} fill="currentColor" />}
-                        {shiftState.isPaused ? 'RETOMAR' : 'PAUSAR'}
-                    </button>
-                    <button onClick={handleStopShift} className="bg-rose-900/80 hover:bg-rose-900 text-rose-200 border border-rose-800 h-12 rounded-xl font-bold text-sm shadow-lg flex items-center justify-center gap-2 transition-all active:scale-[0.98]"><StopCircle size={18} /> ENCERRAR</button>
-                    </>
+                  <Menu className="w-5 h-5 text-slate-100" />
                 )}
+              </button>
+              <div className="flex items-center gap-2">
+                <div className="w-9 h-9 rounded-2xl bg-gradient-to-br from-blue-500 to-emerald-400 flex items-center justify-center shadow-lg shadow-blue-500/40">
+                  <Gauge className="w-5 h-5 text-white" />
                 </div>
+                <div>
+                  <p className="text-xs text-slate-400">{greeting},</p>
+                  <h1 className="font-semibold text-slate-50 tracking-tight">
+                    FinanDrive <span className="text-xs text-emerald-400/80 ml-1">BETA</span>
+                  </h1>
+                </div>
+              </div>
+            </div>
+
+            <div className="hidden md:flex items-center gap-2">
+              <button
+                onClick={() => setShowValues(v => !v)}
+                className="text-xs px-3 py-1.5 rounded-full border border-slate-700 bg-slate-900 hover:bg-slate-800 flex items-center gap-2 text-slate-200"
+              >
+                {showValues ? <EyeOff className="w-3.5 h-3.5" /> : <Eye className="w-3.5 h-3.5" />}
+                {showValues ? 'Ocultar valores' : 'Mostrar valores'}
+              </button>
+              <button
+                onClick={() => setIsSettingsModalOpen(true)}
+                className="text-xs px-3 py-1.5 rounded-full border border-slate-700 bg-slate-900 hover:bg-slate-800 flex items-center gap-1.5 text-slate-200"
+              >
+                <Settings className="w-3.5 h-3.5" />
+                Configurações
+              </button>
+              <button
+                onClick={handleLogout}
+                className="text-xs px-3 py-1.5 rounded-full border border-rose-500/40 bg-rose-950/60 hover:bg-rose-900 flex items-center gap-1.5 text-rose-100"
+              >
+                <LogOut className="w-3.5 h-3.5" />
+                Sair
+              </button>
             </div>
           </div>
-        ) : (
-          /* Dashboard Content */
-          <>
-            <div className="flex flex-col md:flex-row justify-between items-start md:items-center mb-8 gap-4">
-              <div className="flex items-center gap-4">
-                <div>
-                  <h1 className="text-2xl font-bold text-slate-800">{activeTab === 'dashboard' ? 'Painel de Controle' : activeTab === 'reports' ? 'Relatórios de Ganhos' : activeTab === 'bills' ? 'Contas & Planejamento' : 'Histórico Completo'}</h1>
-                  <p className="text-slate-500 text-sm flex items-center gap-1">
-                    {activeTab === 'dashboard' && stats.pendingBillsTotalAll > 0 ? <span className="text-rose-500 font-medium">Você tem {formatCurrency(stats.pendingBillsTotalAll)} em contas pendentes.</span> : <span>Gestão profissional para motoristas.</span>}
-                  </p>
-                </div>
-                <button onClick={() => setShowValues(!showValues)} className="hidden md:flex p-2 text-slate-400 hover:text-indigo-600 bg-white hover:bg-slate-50 rounded-lg border border-slate-200 transition-colors" title={showValues ? 'Ocultar Valores' : 'Mostrar Valores'}>{showValues ? <Eye size={20} /> : <EyeOff size={20} />}</button>
-              </div>
-              <div className="flex flex-wrap gap-2 w-full md:w-auto">
-                <button onClick={() => setIsTransModalOpen(true)} className="flex-1 md:flex-none flex items-center justify-center gap-2 bg-white text-slate-700 border border-slate-200 px-4 py-2.5 rounded-xl hover:bg-slate-50 transition-all font-medium text-sm"><TrendingDown size={16} className="text-rose-500" />Novo Lançamento</button>
-              </div>
+
+          <div className="px-4 pb-3 flex items-center justify-between gap-3">
+            <div className={`inline-flex items-center gap-2 px-3 py-1.5 rounded-full text-xs font-medium ${shiftStatusColor}`}>
+              <Clock className="w-3.5 h-3.5" />
+              <span>{shiftStatusLabel}</span>
             </div>
 
-            {/* Dashboard Content */}
-            {activeTab === 'dashboard' && (
-              <div className="space-y-6 animate-in fade-in slide-in-from-bottom-4 duration-500">
-                <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-2 gap-4">
-                  
-                  {/* META MENSAL REAL (NOVO) */}
-                  <div className={`${stats.statusColor} transition-colors duration-500 rounded-xl p-5 text-white shadow-lg relative overflow-hidden group`}>
-                    <div className="absolute top-0 right-0 p-4 opacity-10 group-hover:opacity-20 transition-opacity"><Target size={80} /></div>
-                    <div className="relative z-10">
-                      <div className="flex justify-between items-start">
-                        <div>
-                          <p className="text-white/80 text-sm font-medium mb-1 flex items-center gap-1"><Target size={14} /> Meta Mensal (Real)</p>
-                          <h3 className="text-3xl font-bold leading-tight">{formatCurrency(stats.remainingToMonthlyGoal)}</h3>
-                          <p className="text-white/80 text-xs font-semibold">
-                            {stats.remainingToMonthlyGoal > 0 ? 'Faltam para bater a meta' : 'Meta do mês atingida!'}
-                          </p>
-                          <p className="text-white/60 text-[11px] font-medium mt-1">Meta do mês: {formatCurrency(stats.S)}</p>
-                        </div>
-                        <button onClick={() => setIsSettingsModalOpen(true)} className="p-2 bg-white/10 hover:bg-white/20 rounded-lg text-white transition-colors z-20 backdrop-blur-sm" title="Configurar Metas e Categorias"><Settings size={20} /></button>
-                      </div>
-                      
-                      {/* Breakdown */}
-                      <div className="mt-3 space-y-1 bg-black/10 p-2 rounded-lg">
-                         <div className="flex justify-between text-xs font-medium">
-                            <span className="opacity-80 flex items-center gap-1"><AlertCircle size={10} /> Mínimo p/ Contas (mês):</span>
-                            <span>{formatCurrency(stats.minimumForBills)}</span>
-                         </div>
-                         {stats.S > 0 && (
-                           <div className="flex justify-between text-xs font-medium">
-                              <span className="opacity-80 flex items-center gap-1"><TrendingUp size={10} /> Meta Salarial (mês):</span>
-                              <span>{formatCurrency(stats.S)}</span>
-                           </div>
-                         )}
-                         <div className="h-px bg-white/10 my-1"></div>
-                         <div className="flex justify-between text-xs font-bold">
-                            <span className="opacity-80">Faturado no mês:</span>
-                            <span>{formatCurrency(stats.F)}</span>
-                         </div>
-                      </div>
+            <div className="flex items-center gap-1.5">
+              <button
+                onClick={handleStartShift}
+                className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-full text-xs font-semibold bg-emerald-500 hover:bg-emerald-400 text-emerald-950 shadow shadow-emerald-500/40"
+              >
+                <Play className="w-3.5 h-3.5" />
+                Iniciar
+              </button>
+              <button
+                onClick={handlePauseShift}
+                className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-full text-xs font-semibold border border-amber-400/60 bg-amber-950/70 hover:bg-amber-900 text-amber-100"
+              >
+                <Pause className="w-3.5 h-3.5" />
+                Pausar
+              </button>
+              <button
+                onClick={handleStopShift}
+                className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-full text-xs font-semibold border border-rose-500/60 bg-rose-950/70 hover:bg-rose-900 text-rose-100"
+              >
+                <StopCircle className="w-3.5 h-3.5" />
+                Encerrar
+              </button>
+            </div>
+          </div>
 
-                      <p className="text-xs text-white/90 mt-2 leading-tight flex items-center gap-1">
-                         {stats.minimumForBills > 0 && <AlertTriangle size={12} className="text-white" />}
-                         {stats.statusMessage}
+          <nav className="border-t border-slate-800">
+            <div className="px-2 md:px-4">
+              <div className="flex md:hidden overflow-x-auto no-scrollbar gap-1 py-2">
+                {[
+                  { id: 'dashboard', label: 'Painel', icon: LayoutDashboard },
+                  { id: 'shift', label: 'Turno', icon: Clock },
+                  { id: 'bills', label: 'Contas', icon: Wallet },
+                  { id: 'history', label: 'Histórico', icon: History },
+                  { id: 'reports', label: 'Relatórios', icon: PieChartIcon },
+                ].map(tab => {
+                  const Icon = tab.icon;
+                  const isActive = activeTab === tab.id;
+                  return (
+                    <button
+                      key={tab.id}
+                      onClick={() => {
+                        setActiveTab(tab.id as any);
+                        setMobileMenuOpen(false);
+                      }}
+                      className={`flex items-center gap-1.5 px-3 py-1.5 rounded-full text-xs border ${
+                        isActive
+                          ? 'bg-blue-600 border-blue-500 text-white'
+                          : 'bg-slate-950 border-slate-700 text-slate-200 hover:bg-slate-900'
+                      }`}
+                    >
+                      <Icon className="w-3.5 h-3.5" />
+                      {tab.label}
+                    </button>
+                  );
+                })}
+              </div>
+
+              <div className="hidden md:flex items-center gap-1 py-2">
+                {[
+                  { id: 'dashboard', label: 'Painel Geral', icon: LayoutDashboard },
+                  { id: 'shift', label: 'Turno', icon: Clock },
+                  { id: 'bills', label: 'Contas & Metas', icon: Wallet },
+                  { id: 'history', label: 'Histórico', icon: History },
+                  { id: 'reports', label: 'Relatórios', icon: PieChartIcon },
+                ].map(tab => {
+                  const Icon = tab.icon;
+                  const isActive = activeTab === tab.id;
+                  return (
+                    <button
+                      key={tab.id}
+                      onClick={() => setActiveTab(tab.id as any)}
+                      className={`flex items-center gap-2 px-3 py-1.5 rounded-full text-xs border transition-colors ${
+                        isActive
+                          ? 'bg-blue-600 border-blue-500 text-white shadow-sm shadow-blue-500/40'
+                          : 'bg-slate-950 border-slate-700 text-slate-200 hover:bg-slate-900'
+                      }`}
+                    >
+                      <Icon className="w-3.5 h-3.5" />
+                      {tab.label}
+                    </button>
+                  );
+                })}
+              </div>
+            </div>
+          </nav>
+        </header>
+
+        <main className="flex-1 px-4 py-3 space-y-4">
+          {isLoadingData && (
+            <div className="mb-3">
+              <div className="inline-flex items-center gap-2 px-3 py-1.5 rounded-full bg-slate-900 border border-slate-700 text-xs text-slate-300">
+                <Info className="w-3.5 h-3.5 text-blue-400" />
+                Sincronizando dados com a nuvem...
+              </div>
+            </div>
+          )}
+
+          {activeTab === 'dashboard' && (
+            <section className="space-y-4">
+              <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
+                <StatCard
+                  title="Lucro líquido (real)"
+                  icon={Wallet}
+                  value={showValues ? stats.netProfit : null}
+                  description="Saldo final considerando entradas e saídas"
+                  highlight
+                  extraInfoLines={
+                    showValues
+                      ? [
+                          `Despesas do mês: ${formatCurrency(stats.totalExpenses)}`,
+                          `Caixa atual: ${formatCurrency(stats.cashOnHand)}`,
+                        ]
+                      : []
+                  }
+                />
+                <StatCard
+                  title="Meta Mensal (real)"
+                  icon={Target}
+                  value={showValues ? stats.remainingToMonthlyGoal : null}
+                  description="Falta para bater a meta de salário"
+                  extraInfoLines={
+                    showValues
+                      ? [
+                          `Meta do mês: ${formatCurrency(stats.S)}`,
+                          stats.remainingToMonthlyGoal <= 0
+                            ? 'Meta alcançada! Tudo que vier é lucro.'
+                            : stats.netProfit <= 0
+                              ? 'Comece o mês virando o jogo, foco no lucro.'
+                              : 'Mantenha o ritmo para bater a meta.'
+                        ]
+                      : []
+                  }
+                />
+                <StatCard
+                  title="Rendimento do mês"
+                  icon={Gauge}
+                  value={showValues ? stats.netPerHour : null}
+                  description="Lucro líquido por hora trabalhada"
+                  extraInfoLines={
+                    showValues
+                      ? [
+                          `Horas no mês: ${stats.hoursWorked.toFixed(1)}h`,
+                          `R$/km: ${stats.netPerKm.toFixed(2)}`
+                        ]
+                      : []
+                  }
+                />
+              </div>
+
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-3 items-start">
+                <div className="bg-slate-900/70 border border-slate-800 rounded-2xl p-3 space-y-3">
+                  <div className="flex items-center justify-between gap-2">
+                    <div>
+                      <h2 className="text-sm font-semibold text-slate-50 flex items-center gap-1.5">
+                        <CalendarClock className="w-4 h-4 text-blue-400" />
+                        Progresso do mês
+                      </h2>
+                      <p className="text-xs text-slate-400">
+                        Baseado nos dias planejados para trabalhar
+                      </p>
+                    </div>
+                    <div className="text-right">
+                      <p className="text-[11px] text-slate-400">
+                        Dias planejados
+                      </p>
+                      <p className="text-sm font-semibold text-slate-50">
+                        {stats.totalWorkingDaysPlanned || 0} dias
                       </p>
                     </div>
                   </div>
 
-                  <StatCard
-                    title="Lucro Líquido"
-                    value={formatCurrency(stats.netProfit)}
-                    icon={Wallet}
-                    colorClass="bg-slate-800"
-                    trend={`${stats.profitMargin.toFixed(0)}% Margem`}
-                    trendUp={stats.profitMargin > 30}
-                    extraInfoLines={[
-                      `Despesas do mês: ${formatCurrency(stats.totalExpensesThisMonth)}`,
-                      `Caixa atual: ${formatCurrency(stats.cashOnHand)}`,
-                    ]}
-                  />
-                </div>
-                
-                {/* Progress Bar for Salary Goal */}
-                {stats.S > 0 && (
-                   <div className="bg-white p-4 rounded-xl shadow-sm border border-slate-200 flex flex-col gap-2">
-                      <div className="flex justify-between text-sm font-bold text-slate-700">
-                        <span>Progresso Mensal</span>
-                        <span>{Math.min(100, (stats.F / stats.S) * 100).toFixed(1)}%</span>
-                      </div>
-                      <div className="w-full h-3 bg-slate-100 rounded-full overflow-hidden">
-                        <div 
-                          className="h-full bg-emerald-500 rounded-full transition-all duration-1000 ease-out" 
-                          style={{ width: `${Math.min(100, (stats.F / stats.S) * 100)}%` }} 
-                        />
-                      </div>
-                      <div className="flex justify-between text-xs text-slate-500">
-                         <span>Realizado: {formatCurrency(stats.F)}</span>
-                         <span>Meta: {formatCurrency(stats.S)}</span>
-                      </div>
-                      <div className="flex items-center gap-1 text-xs text-indigo-600 mt-1">
-                        <CalendarCheck size={12} />
-                        <span>Restam {stats.remainingDays} dias de trabalho planejados neste mês.</span>
-                      </div>
-                   </div>
-                )}
-
-                <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
-                  <div className="lg:col-span-2 bg-white p-6 rounded-2xl shadow-sm border border-slate-200">
-                    <div className="flex justify-between items-center mb-6"><h3 className="font-bold text-slate-800">Ganhos vs Despesas</h3><div className="text-xs text-slate-500">Visão Geral</div></div>
-                    <div className="h-72 w-full flex items-center justify-center">
-                      <ResponsiveContainer width="100%" height="100%">
-                        <PieChart>
-                          <Pie data={pieData} cx="50%" cy="50%" labelLine={false} label={renderCustomizedLabel} outerRadius="80%" dataKey="value">
-                            {pieData.map((entry, index) => <Cell key={`cell-${index}`} fill={entry.color} />)}
-                          </Pie>
-                          <Legend layout="vertical" verticalAlign="middle" align="right" iconType="circle" />
-                          <Tooltip formatter={(value: number) => [showValues ? `R$ ${value.toFixed(2)}` : 'R$ ****', '']} contentStyle={{ borderRadius: '12px', border: 'none', boxShadow: '0 10px 15px -3px rgb(0 0 0 / 0.1)' }} />
-                        </PieChart>
-                      </ResponsiveContainer>
+                  <div className="space-y-2">
+                    <div className="flex items-center justify-between text-[11px] text-slate-400">
+                      <span>Meta de salário + contas</span>
+                      {showValues && (
+                        <span>{formatCurrency(stats.monthlyGoalTotal)}</span>
+                      )}
+                    </div>
+                    <div className="relative h-2.5 rounded-full bg-slate-800 overflow-hidden">
+                      <div
+                        className="absolute inset-y-0 left-0 bg-gradient-to-r from-emerald-400 to-blue-500 transition-all"
+                        style={{
+                          width: stats.monthlyGoalTotal > 0
+                            ? `${Math.min(100, (stats.monthlyGoalTotal - stats.monthlyGoalRemaining) / stats.monthlyGoalTotal * 100)}%`
+                            : '0%',
+                        }}
+                      />
+                    </div>
+                    <div className="flex items-center justify-between text-[11px] text-slate-400">
+                      <span>Progresso atual</span>
+                      {showValues && (
+                        <span>
+                          {formatCurrency(stats.monthlyGoalTotal - stats.monthlyGoalRemaining)} de{" "}
+                          {formatCurrency(stats.monthlyGoalTotal)}
+                        </span>
+                      )}
                     </div>
                   </div>
-                  <div className="space-y-6">
-                    <div className="bg-white p-6 rounded-2xl shadow-sm border border-slate-200">
-                      <div className="flex justify-between items-center mb-4"><h3 className="font-bold text-slate-800 text-sm">Próximos Pagamentos</h3><button onClick={() => setActiveTab('bills')} className="text-indigo-600 text-xs hover:underline">Ver tudo</button></div>
-                      <div className="space-y-3">
-                        {upcomingBills.map(bill => (
-                          <div key={bill.id} className="flex justify-between items-center p-3 bg-slate-50 rounded-lg border border-slate-100">
-                            <div><p className="text-sm font-semibold text-slate-700">{bill.description}</p><p className="text-xs text-rose-500 font-medium">Vence: {formatDateBr(bill.dueDate)}</p></div>
-                            <span className="text-sm font-bold text-slate-800">{formatCurrency(bill.amount)}</span>
-                          </div>
-                        ))}
-                        {upcomingBills.length === 0 && <p className="text-center text-xs text-slate-400 py-4">Tudo pago! 🎉</p>}
+
+                  <div className="grid grid-cols-2 gap-2 mt-2">
+                    <div className="bg-slate-950/80 border border-slate-800 rounded-xl p-2.5">
+                      <div className="flex items-center justify-between gap-1">
+                        <span className="text-[11px] text-slate-400 flex items-center gap-1">
+                          <ArrowUpRight className="w-3 h-3 text-emerald-400" />
+                          Faturado no mês
+                        </span>
                       </div>
+                      <p className="mt-0.5 text-sm font-semibold text-slate-50">
+                        {showValues ? formatCurrency(stats.netProfitFinance) : '•••••'}
+                      </p>
+                    </div>
+                    <div className="bg-slate-950/80 border border-slate-800 rounded-xl p-2.5">
+                      <div className="flex items-center justify-between gap-1">
+                        <span className="text-[11px] text-slate-400 flex items-center gap-1">
+                          <ArrowDownRight className="w-3 h-3 text-rose-400" />
+                          Despesas do mês
+                        </span>
+                      </div>
+                      <p className="mt-0.5 text-sm font-semibold text-slate-50">
+                        {showValues ? formatCurrency(stats.totalExpenses) : '•••••'}
+                      </p>
                     </div>
                   </div>
                 </div>
-              </div>
-            )}
 
-            {/* Reports Content */}
-            {activeTab === 'reports' && (
-              <ReportsTab
-                transactions={transactions}
-                bills={bills}
-                showValues={showValues}
-              />
-            )}
+                <div className="bg-slate-900/70 border border-slate-800 rounded-2xl p-3 space-y-3">
+                  <div className="flex items-center justify-between gap-2">
+                    <div>
+                      <h2 className="text-sm font-semibold text-slate-50 flex items-center gap-1.5">
+                        <TrendingDown className="w-4 h-4 text-amber-400" />
+                        Próximos pagamentos
+                      </h2>
+                      <p className="text-xs text-slate-400">
+                        Contas em aberto ordenadas pelo vencimento
+                      </p>
+                    </div>
+                    {showValues && (
+                      <div className="text-right">
+                        <p className="text-[11px] text-slate-400">
+                          Total de contas do mês
+                        </p>
+                        <p className="text-sm font-semibold text-slate-50">
+                          {formatCurrency(stats.totalBills)}
+                        </p>
+                      </div>
+                    )}
+                  </div>
 
-            {/* Bills Content */}
-            {activeTab === 'bills' && (
-              <div className="space-y-6 animate-in fade-in slide-in-from-bottom-4 duration-500">
-                <div className="grid grid-cols-2 gap-4">
-                  <div className="bg-white p-5 rounded-2xl shadow-sm border border-emerald-100 flex items-center justify-between">
-                    <div><p className="text-xs font-bold text-emerald-600 uppercase mb-1">Total Pago</p><h3 className="text-2xl font-bold text-emerald-700">{formatCurrency(billsSummary.paid)}</h3></div>
-                    <div className="bg-emerald-50 p-3 rounded-full text-emerald-600"><CheckCircle2 size={24} /></div>
-                  </div>
-                  <div className="bg-white p-5 rounded-2xl shadow-sm border border-rose-100 flex items-center justify-between">
-                    <div><p className="text-xs font-bold text-rose-600 uppercase mb-1">A Pagar</p><h3 className="text-2xl font-bold text-rose-700">{formatCurrency(billsSummary.pending)}</h3></div>
-                    <div className="bg-rose-50 p-3 rounded-full text-rose-600"><AlertCircle size={24} /></div>
-                  </div>
-                </div>
-                <div className="flex justify-between items-center bg-white p-6 rounded-2xl shadow-sm border border-slate-200">
-                  <div><h2 className="text-lg font-bold text-slate-800">Contas a Pagar</h2><p className="text-slate-500 text-sm">Gerencie suas obrigações futuras.</p></div>
-                  <button onClick={() => { setEditingBill(null); setIsBillModalOpen(true); }} className="flex items-center gap-2 bg-rose-600 text-white px-4 py-2 rounded-lg hover:bg-rose-700 transition-colors shadow-lg shadow-rose-200"><Plus size={16} /> Adicionar</button>
-                </div>
-                <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
-                  {bills.map(bill => (
-                    <div key={bill.id} className={`p-5 rounded-xl border transition-all ${bill.isPaid ? 'bg-slate-50 border-slate-200 opacity-75' : 'bg-white border-rose-100 shadow-sm'}`}>
-                      <div className="flex justify-between items-start mb-3">
-                        <div className={`p-2 rounded-lg ${bill.isPaid ? 'bg-emerald-100 text-emerald-600' : 'bg-rose-100 text-rose-600'}`}>{bill.isPaid ? <Wallet size={20} /> : <CalendarClock size={20} />}</div>
-                        <div className="flex items-center gap-2">
-                          <span className={`text-lg font-bold ${bill.isPaid ? 'text-slate-500' : 'text-slate-800'}`}>{formatCurrency(bill.amount)}</span>
-                          <div className="flex">
-                            <button onClick={() => handleEditBill(bill)} className="p-2 text-slate-400 hover:text-indigo-600 hover:bg-indigo-50 rounded-full transition-colors" title="Editar conta"><Edit2 size={18} /></button>
-                            <button onClick={() => handleDeleteBill(bill.id)} className="p-2 text-slate-400 hover:text-rose-500 hover:bg-rose-50 rounded-full transition-colors" title="Excluir conta"><Trash2 size={18} /></button>
+                  {stats.upcomingBills.length === 0 ? (
+                    <div className="flex items-center gap-2 text-xs text-slate-400 bg-slate-950/70 border border-slate-800 rounded-xl px-3 py-2">
+                      <CheckCircle2 className="w-3.5 h-3.5 text-emerald-400" />
+                      <span>Não há contas em aberto cadastradas para este mês.</span>
+                    </div>
+                  ) : (
+                    <div className="space-y-1.5">
+                      {stats.upcomingBills.map((bill) => (
+                        <div
+                          key={bill.id}
+                          className="flex items-center justify-between gap-2 bg-slate-950/70 border border-slate-800 rounded-xl px-3 py-2"
+                        >
+                          <div>
+                            <p className="text-xs font-medium text-slate-100 flex items-center gap-1.5">
+                              <span className="inline-flex items-center justify-center w-4 h-4 rounded-full bg-blue-500/10 border border-blue-500/40 text-[10px] text-blue-300">
+                                {bill.category?.[0] || 'C'}
+                              </span>
+                              {bill.description || bill.category || 'Conta'}
+                            </p>
+                            <p className="text-[11px] text-slate-400 flex items-center gap-1.5 mt-0.5">
+                              <CalendarClock className="w-3 h-3 text-slate-500" />
+                              Vence em {formatDateBr(bill.dueDate)}
+                            </p>
                           </div>
+                          {showValues && (
+                            <div className="text-right">
+                              <p className="text-xs font-semibold text-slate-50">
+                                {formatCurrency(bill.amount)}
+                              </p>
+                              <p className="text-[11px] text-amber-400 flex items-center justify-end gap-1 mt-0.5">
+                                <AlertCircle className="w-3 h-3" />
+                                Em aberto
+                              </p>
+                            </div>
+                          )}
                         </div>
+                      ))}
+                    </div>
+                  )}
+
+                  {showValues && (
+                    <div className="mt-2 grid grid-cols-2 gap-2 text-[11px] text-slate-300">
+                      <div className="bg-slate-950/80 border border-slate-800 rounded-xl p-2 flex flex-col gap-0.5">
+                        <span className="flex items-center gap-1 text-slate-400">
+                          <ArrowDownCircle className="w-3 h-3 text-amber-400" />
+                          Cobertura necessária (mês)
+                        </span>
+                        <span className="font-semibold text-slate-50">
+                          {formatCurrency(stats.remainingBillsAfterCash)}
+                        </span>
                       </div>
-                      <div className="mb-1"><h4 className={`font-semibold ${bill.isPaid ? 'text-slate-500 line-through' : 'text-slate-800'}`}>{bill.description}</h4>{bill.category && <span className="text-[10px] uppercase font-bold tracking-wider text-slate-400">{bill.category}</span>}</div>
-                      <div className="flex justify-between items-center mt-4">
-                        <span className="text-xs text-slate-500">Vencimento: {formatDateBr(bill.dueDate)}</span>
-                        <button onClick={() => toggleBillPaid(bill.id)} className={`text-xs px-3 py-1 rounded-full border transition-colors ${bill.isPaid ? 'border-emerald-200 text-emerald-600 hover:bg-emerald-50' : 'border-slate-200 text-slate-600 hover:bg-slate-100'}`}>{bill.isPaid ? 'Marcar como Pendente' : 'Marcar como Pago'}</button>
+                      <div className="bg-slate-950/80 border border-slate-800 rounded-xl p-2 flex flex-col gap-0.5">
+                        <span className="flex items-center gap-1 text-slate-400">
+                          <ArrowUpCircle className="w-3 h-3 text-emerald-400" />
+                          Salário alvo
+                        </span>
+                        <span className="font-semibold text-slate-50">
+                          {formatCurrency(stats.monthlySalaryGoal)}
+                        </span>
                       </div>
                     </div>
-                  ))}
+                  )}
                 </div>
               </div>
-            )}
+            </section>
+          )}
 
-            {/* History Content */}
-            {activeTab === 'history' && (
-              <div className="space-y-6 animate-in fade-in slide-in-from-bottom-4 duration-500">
-                <div className="bg-white p-4 md:p-6 rounded-2xl shadow-sm border border-slate-200">
-                  <div className="flex flex-col md:flex-row justify-between items-center gap-4 mb-4">
-                    <div><h2 className="text-xl font-bold text-slate-800 flex items-center gap-2"><History className="text-indigo-600" /> Histórico de Transações</h2></div>
-                    <div className="flex bg-slate-100 p-1 rounded-xl overflow-x-auto max-w-full">
-                      {(['today', 'week', 'month', 'all', 'custom'] as const).map(range => (
-                        <button key={range} onClick={() => setHistoryRange(range)} className={`px-3 py-1.5 text-xs md:text-sm font-medium rounded-lg transition-all whitespace-nowrap ${historyRange === range ? 'bg-white text-indigo-600 shadow-sm' : 'text-slate-500 hover:text-slate-700'}`}>{range === 'today' && 'Hoje'}{range === 'week' && 'Semana'}{range === 'month' && 'Mês'}{range === 'all' && 'Tudo'}{range === 'custom' && 'Outro'}</button>
+          {activeTab === 'shift' && (
+            <section className="space-y-4">
+              <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+                <div className="bg-slate-900/80 border border-slate-800 rounded-2xl p-3 flex flex-col gap-2">
+                  <div className="flex items-center justify-between gap-1">
+                    <span className="text-[11px] text-slate-400 flex items-center gap-1">
+                      <Clock className="w-3.5 h-3.5 text-emerald-400" />
+                      Tempo de turno
+                    </span>
+                  </div>
+                  <p className="text-lg font-semibold text-slate-50">
+                    {formatElapsedTime(shiftState.elapsedSeconds)}
+                  </p>
+                  <p className="text-[11px] text-slate-500">
+                    {shiftState.isActive
+                      ? shiftState.isPaused
+                        ? 'Pausado - retome para continuar contando.'
+                        : 'Contando apenas quando o turno está ativo.'
+                      : 'Inicie o turno para começar a contagem.'}
+                  </p>
+                </div>
+
+                <div className="bg-slate-900/80 border border-slate-800 rounded-2xl p-3 flex flex-col gap-2">
+                  <div className="flex items-center justify-between gap-1">
+                    <span className="text-[11px] text-slate-400 flex items-center gap-1">
+                      <Gauge className="w-3.5 h-3.5 text-blue-400" />
+                      R$/hora (turno)
+                    </span>
+                  </div>
+                  <p className="text-lg font-semibold text-slate-50">
+                    {showValues ? formatCurrency(stats.netPerHourShift || 0) : '•••••'}
+                  </p>
+                  <p className="text-[11px] text-slate-500">
+                    Considerando somente o período do turno atual.
+                  </p>
+                </div>
+
+                <div className="bg-slate-900/80 border border-slate-800 rounded-2xl p-3 flex flex-col gap-2">
+                  <div className="flex items-center justify-between gap-1">
+                    <span className="text-[11px] text-slate-400 flex items-center gap-1">
+                      <Fuel className="w-3.5 h-3.5 text-emerald-400" />
+                      R$/km (turno)
+                    </span>
+                  </div>
+                  <p className="text-lg font-semibold text-slate-50">
+                    {showValues ? formatCurrency(stats.netPerKmShift || 0) : '•••••'}
+                  </p>
+                  <p className="text-[11px] text-slate-500">
+                    Baseado nos lançamentos de KM e despesas do turno.
+                  </p>
+                </div>
+
+                <div className="bg-slate-900/80 border border-slate-800 rounded-2xl p-3 flex flex-col gap-2">
+                  <div className="flex items-center justify-between gap-1">
+                    <span className="text-[11px] text-slate-400 flex items-center gap-1">
+                      <Wallet className="w-3.5 h-3.5 text-emerald-400" />
+                      Líquido do turno
+                    </span>
+                  </div>
+                  <p className="text-lg font-semibold text-slate-50">
+                    {showValues ? formatCurrency(stats.netProfitShift || 0) : '•••••'}
+                  </p>
+                  <p className="text-[11px] text-slate-500">
+                    Entradas do turno menos as despesas lançadas nele.
+                  </p>
+                </div>
+              </div>
+
+              <div className="bg-slate-900/80 border border-slate-800 rounded-2xl p-3 space-y-3">
+                <div className="flex items-center justify-between gap-2 mb-1">
+                  <div>
+                    <h2 className="text-sm font-semibold text-slate-50 flex items-center gap-1.5">
+                      <Target className="w-4 h-4 text-emerald-400" />
+                      Meta diária do dia (real)
+                    </h2>
+                    <p className="text-xs text-slate-400">
+                      Considerando salário alvo, contas do mês e saldo em caixa.
+                    </p>
+                  </div>
+                  {showValues && (
+                    <div className="text-right">
+                      <p className="text-[11px] text-slate-400">
+                        Meta total do dia
+                      </p>
+                      <p className="text-sm font-semibold text-slate-50">
+                        {formatCurrency(stats.dailyGoal || 0)}
+                      </p>
+                    </div>
+                  )}
+                </div>
+
+                <div className="bg-slate-950/70 border border-slate-800 rounded-xl p-2.5 flex items-center justify-between gap-2">
+                  <div className="flex flex-col gap-0.5">
+                    <span className="text-[11px] text-slate-400">Faturado do dia</span>
+                    <span className="text-sm font-semibold text-emerald-400">
+                      {showValues ? formatCurrency(stats.netProfitFinance) : '•••••'}
+                    </span>
+                  </div>
+                  <div className="flex flex-col items-end gap-0.5">
+                    <span className="text-[11px] text-slate-400">
+                      Falta para a meta
+                    </span>
+                    <span className="text-sm font-semibold text-slate-50">
+                      {showValues
+                        ? formatCurrency(Math.max(0, remainingDailyGoal || 0))
+                        : '•••••'}
+                    </span>
+                  </div>
+                </div>
+
+                <div className="grid grid-cols-2 gap-2">
+                  <div className="bg-slate-950/80 border border-slate-800 rounded-xl p-2.5">
+                    <p className="text-[11px] text-slate-400 flex items-center gap-1">
+                      <ArrowRight className="w-3 h-3 text-emerald-400" />
+                      Falta p/ meta salário (hoje)
+                    </p>
+                    <p className="mt-1 text-sm font-semibold text-slate-50">
+                      {showValues ? formatCurrency(Math.max(0, remainingSalaryToday || 0)) : '•••••'}
+                    </p>
+                  </div>
+                  <div className="bg-slate-950/80 border border-slate-800 rounded-xl p-2.5">
+                    <p className="text-[11px] text-slate-400 flex items-center gap-1">
+                      <ArrowRight className="w-3 h-3 text-amber-400" />
+                      Falta p/ meta contas (hoje)
+                    </p>
+                    <p className="mt-1 text-sm font-semibold text-slate-50">
+                      {showValues ? formatCurrency(Math.max(0, remainingAccountsTodayShift || 0)) : '•••••'}
+                    </p>
+                  </div>
+                </div>
+
+                <div className="grid grid-cols-2 md:grid-cols-4 gap-2 mt-1">
+                  <button
+                    onClick={() => handleOpenEntry('uber')}
+                    className="flex items-center justify-between gap-2 px-3 py-2 rounded-xl border border-slate-700 bg-slate-950 hover:bg-slate-900 transition-colors"
+                  >
+                    <div className="flex items-center gap-2">
+                      <span className="inline-flex items-center justify-center w-6 h-6 rounded-lg bg-slate-800 text-xs font-semibold">
+                        U
+                      </span>
+                      <span className="text-[11px] text-slate-200 text-left">
+                        Uber
+                      </span>
+                    </div>
+                    {showValues && (
+                      <span className="text-xs font-semibold text-emerald-400">
+                        {formatCurrency(shiftState.earnings.uber || 0)}
+                      </span>
+                    )}
+                  </button>
+
+                  <button
+                    onClick={() => handleOpenEntry('99')}
+                    className="flex items-center justify-between gap-2 px-3 py-2 rounded-xl border border-slate-700 bg-slate-950 hover:bg-slate-900 transition-colors"
+                  >
+                    <div className="flex items-center gap-2">
+                      <span className="inline-flex items-center justify-center w-6 h-6 rounded-lg bg-slate-800 text-xs font-semibold">
+                        99
+                      </span>
+                      <span className="text-[11px] text-slate-200 text-left">
+                        99
+                      </span>
+                    </div>
+                    {showValues && (
+                      <span className="text-xs font-semibold text-emerald-400">
+                        {formatCurrency(shiftState.earnings.n99 || 0)}
+                      </span>
+                    )}
+                  </button>
+
+                  <button
+                    onClick={() => handleOpenEntry('indrive')}
+                    className="flex items-center justify-between gap-2 px-3 py-2 rounded-xl border border-slate-700 bg-slate-950 hover:bg-slate-900 transition-colors"
+                  >
+                    <div className="flex items-center gap-2">
+                      <span className="inline-flex items-center justify-center w-6 h-6 rounded-lg bg-slate-800 text-xs font-semibold">
+                        IN
+                      </span>
+                      <span className="text-[11px] text-slate-200 text-left">
+                        InDrive
+                      </span>
+                    </div>
+                    {showValues && (
+                      <span className="text-xs font-semibold text-emerald-400">
+                        {formatCurrency(shiftState.earnings.indrive || 0)}
+                      </span>
+                    )}
+                  </button>
+
+                  <button
+                    onClick={() => handleOpenEntry('private')}
+                    className="flex items-center justify-between gap-2 px-3 py-2 rounded-xl border border-slate-700 bg-slate-950 hover:bg-slate-900 transition-colors"
+                  >
+                    <div className="flex items-center gap-2">
+                      <span className="inline-flex items-center justify-center w-6 h-6 rounded-lg bg-slate-800 text-xs font-semibold">
+                        P
+                      </span>
+                      <span className="text-[11px] text-slate-200 text-left">
+                        Particular
+                      </span>
+                    </div>
+                    {showValues && (
+                      <span className="text-xs font-semibold text-emerald-400">
+                        {formatCurrency(shiftState.earnings.private || 0)}
+                      </span>
+                    )}
+                  </button>
+
+                  <button
+                    onClick={() => handleOpenEntry('km')}
+                    className="flex items-center justify-between gap-2 px-3 py-2 rounded-xl border border-slate-700 bg-slate-950 hover:bg-slate-900 transition-colors"
+                  >
+                    <div className="flex items-center gap-2">
+                      <span className="inline-flex items-center justify-center w-6 h-6 rounded-lg bg-slate-800 text-xs font-semibold">
+                        KM
+                      </span>
+                      <span className="text-[11px] text-slate-200 text-left">
+                        Quilometragem
+                      </span>
+                    </div>
+                    {showValues && (
+                      <span className="text-xs font-semibold text-emerald-400">
+                        {shiftState.km} km
+                      </span>
+                    )}
+                  </button>
+
+                  <button
+                    onClick={() => handleOpenEntry('expense')}
+                    className="flex items-center justify-between gap-2 px-3 py-2 rounded-xl border border-slate-700 bg-slate-950 hover:bg-slate-900 transition-colors"
+                  >
+                    <div className="flex items-center gap-2">
+                      <span className="inline-flex items-center justify-center w-6 h-6 rounded-lg bg-slate-800 text-xs font-semibold">
+                        R$
+                      </span>
+                      <span className="text-[11px] text-slate-200 text-left">
+                        Despesa do turno
+                      </span>
+                    </div>
+                    {showValues && (
+                      <span className="text-xs font-semibold text-rose-400">
+                        {formatCurrency(shiftState.expenses || 0)}
+                      </span>
+                    )}
+                  </button>
+                </div>
+
+                {shiftState.expenseList.length > 0 && (
+                  <div className="mt-2 bg-slate-950/80 border border-slate-800 rounded-xl p-2.5 space-y-1.5">
+                    <div className="flex items-center justify-between gap-2">
+                      <span className="text-[11px] text-slate-400 flex items-center gap-1">
+                        <TrendingDown className="w-3 h-3 text-rose-400" />
+                        Despesas deste turno
+                      </span>
+                      {showValues && (
+                        <span className="text-[11px] text-slate-300">
+                          Total: {formatCurrency(shiftState.expenses || 0)}
+                        </span>
+                      )}
+                    </div>
+                    <div className="max-h-28 overflow-y-auto space-y-1">
+                      {shiftState.expenseList.map(exp => (
+                        <div
+                          key={exp.id}
+                          className="flex items-center justify-between gap-2 text-[11px] text-slate-300"
+                        >
+                          <span className="truncate">{exp.description}</span>
+                          {showValues && (
+                            <span className="text-rose-300">
+                              {formatCurrency(exp.amount)}
+                            </span>
+                          )}
+                        </div>
                       ))}
                     </div>
                   </div>
-                  {historyRange === 'custom' && (
-                    <div className="flex items-center gap-2 bg-slate-50 p-2 rounded-xl border border-slate-200 justify-center animate-in fade-in slide-in-from-top-2 mb-4">
-                      <input type="date" value={historyCustomStart} onChange={e => setHistoryCustomStart(e.target.value)} className="px-2 py-1.5 border rounded-lg text-sm outline-none focus:ring-2 focus:ring-indigo-500 w-full md:w-auto" />
-                      <span className="text-slate-400"><ChevronRight size={16} /></span>
-                      <input type="date" value={historyCustomEnd} onChange={e => setHistoryCustomEnd(e.target.value)} className="px-2 py-1.5 border rounded-lg text-sm outline-none focus:ring-2 focus:ring-indigo-500 w-full md:w-auto" />
-                    </div>
-                  )}
-                  <div className="grid grid-cols-3 gap-2 md:gap-4 mt-2">
-                    <div className="bg-emerald-50 p-3 rounded-xl border border-emerald-100 text-center"><div className="text-xs text-emerald-600 font-bold uppercase mb-1 flex justify-center items-center gap-1"><ArrowUpCircle size={12} /> Entradas</div><div className="text-sm md:text-lg font-bold text-emerald-700">{formatCurrency(historySummary.income)}</div></div>
-                    <div className="bg-rose-50 p-3 rounded-xl border border-rose-100 text-center"><div className="text-xs text-rose-600 font-bold uppercase mb-1 flex justify-center items-center gap-1"><ArrowDownCircle size={12} /> Saídas</div><div className="text-sm md:text-lg font-bold text-rose-700">{formatCurrency(historySummary.expense)}</div></div>
-                    <div className="bg-slate-50 p-3 rounded-xl border border-slate-200 text-center"><div className="text-xs text-slate-600 font-bold uppercase mb-1">Saldo</div><div className={`text-sm md:text-lg font-bold ${historySummary.balance >= 0 ? 'text-indigo-600' : 'text-rose-600'}`}>{formatCurrency(historySummary.balance)}</div></div>
+                )}
+
+                <div className="mt-2 flex items-center justify-between gap-2 text-[11px] text-slate-400">
+                  <div className="flex items-center gap-1.5">
+                    <AlertTriangle className="w-3 h-3 text-amber-400" />
+                    <span>
+                      O tempo só conta quando o turno está ativo e não pausado. Se o app fechar e o turno continuar ativo, ao voltar ele tenta recuperar o tempo pelo relógio.
+                    </span>
+                  </div>
+                  <button
+                    onClick={handleResetShift}
+                    className="inline-flex items-center gap-1 px-2 py-1 rounded-full border border-slate-700 text-[11px] text-slate-300 hover:bg-slate-900"
+                  >
+                    Zerar turno
+                  </button>
+                </div>
+              </div>
+            </section>
+          )}
+
+          {activeTab === 'bills' && (
+            <section className="space-y-4">
+              <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
+                <StatCard
+                  title="Caixa atual (real)"
+                  icon={Wallet}
+                  value={showValues ? stats.cashOnHand : null}
+                  description="Lucro líquido + saldo inicial do mês"
+                  extraInfoLines={
+                    showValues
+                      ? [
+                          `Lucro líquido do mês: ${formatCurrency(stats.netProfitFinance)}`,
+                          `Saldo inicial: ${formatCurrency(stats.openingBalance)}`,
+                        ]
+                      : []
+                  }
+                />
+                <StatCard
+                  title="Cobertura de contas"
+                  icon={TrendingDown}
+                  value={showValues ? stats.remainingBillsAfterCash : null}
+                  description="Contas do mês menos o saldo em caixa"
+                  extraInfoLines={
+                    showValues
+                      ? [
+                          `Total de contas: ${formatCurrency(stats.totalBills)}`,
+                          `Coberto por caixa: ${formatCurrency(stats.totalBills - stats.remainingBillsAfterCash)}`,
+                        ]
+                      : []
+                  }
+                />
+                <StatCard
+                  title="Pressão do dia"
+                  icon={AlertTriangle}
+                  value={showValues ? stats.overdueAfterCashToday : null}
+                  description="Contas vencidas/para hoje sem cobertura"
+                  extraInfoLines={
+                    showValues
+                      ? [
+                          `Contas vencidas+hoje: ${formatCurrency(stats.overdueAndTodayTotal)}`,
+                          `Caixa considerado: ${formatCurrency(stats.openingBalance)}`,
+                        ]
+                      : []
+                  }
+                />
+              </div>
+
+              <div className="bg-slate-900/80 border border-slate-800 rounded-2xl p-3 space-y-3">
+                <div className="flex items-center justify-between gap-2">
+                  <div>
+                    <h2 className="text-sm font-semibold text-slate-50 flex items-center gap-1.5">
+                      <Wallet className="w-4 h-4 text-emerald-400" />
+                      Contas do mês
+                    </h2>
+                    <p className="text-xs text-slate-400">
+                      Use esta área para controlar vencimentos e metas de cobertura.
+                    </p>
+                  </div>
+                  <button
+                    onClick={() => { setEditingBill(null); setIsBillModalOpen(true); }}
+                    className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-full text-xs font-semibold bg-blue-600 hover:bg-blue-500 text-white shadow shadow-blue-500/40"
+                  >
+                    <Plus className="w-3.5 h-3.5" />
+                    Nova conta
+                  </button>
+                </div>
+
+                {bills.length === 0 ? (
+                  <div className="flex items-center gap-2 text-xs text-slate-400 bg-slate-950/70 border border-slate-800 rounded-xl px-3 py-2">
+                    <Info className="w-3.5 h-3.5 text-blue-400" />
+                    <span>Nenhuma conta cadastrada ainda. Adicione suas contas fixas e variáveis do mês.</span>
+                  </div>
+                ) : (
+                  <div className="space-y-1.5 max-h-72 overflow-y-auto pr-1">
+                    {bills
+                      .slice()
+                      .sort((a, b) => a.dueDate.localeCompare(b.dueDate))
+                      .map(bill => (
+                        <div
+                          key={bill.id}
+                          className="flex items-center gap-2 bg-slate-950/80 border border-slate-800 rounded-xl px-3 py-2 text-xs"
+                        >
+                          <div className="flex-1 min-w-0">
+                            <p className="font-medium text-slate-100 truncate">
+                              {bill.description || bill.category || 'Conta'}
+                            </p>
+                            <p className="text-[11px] text-slate-400 flex items-center gap-1 mt-0.5">
+                              <CalendarClock className="w-3 h-3" />
+                              Vence em {formatDateBr(bill.dueDate)}
+                            </p>
+                          </div>
+                          <div className="flex flex-col items-end gap-0.5">
+                            {showValues && (
+                              <p className="font-semibold text-slate-50">
+                                {formatCurrency(bill.amount)}
+                              </p>
+                            )}
+                            <div className="flex items-center gap-1">
+                              <button
+                                onClick={() => toggleBillPaid(bill.id)}
+                                className={`px-2 py-0.5 rounded-full text-[11px] border ${
+                                  bill.isPaid
+                                    ? 'bg-emerald-500/10 border-emerald-500/60 text-emerald-200'
+                                    : 'bg-amber-500/10 border-amber-500/60 text-amber-200'
+                                }`}
+                              >
+                                {bill.isPaid ? 'Paga' : 'Em aberto'}
+                              </button>
+                              <button
+                                onClick={() => handleEditBillClick(bill)}
+                                className="p-1 rounded-full hover:bg-slate-800 text-slate-300"
+                              >
+                                <Edit2 className="w-3 h-3" />
+                              </button>
+                              <button
+                                onClick={() => handleDeleteBill(bill.id)}
+                                className="p-1 rounded-full hover:bg-slate-800 text-rose-300"
+                              >
+                                <Trash2 className="w-3 h-3" />
+                              </button>
+                            </div>
+                          </div>
+                        </div>
+                      ))}
+                  </div>
+                )}
+              </div>
+            </section>
+          )}
+
+          {activeTab === 'history' && (
+            <section className="space-y-4">
+              <div className="bg-slate-900/80 border border-slate-800 rounded-2xl p-3 space-y-3">
+                <div className="flex items-center justify-between gap-2">
+                  <div>
+                    <h2 className="text-sm font-semibold text-slate-50 flex items-center gap-1.5">
+                      <History className="w-4 h-4 text-blue-400" />
+                      Histórico de lançamentos
+                    </h2>
+                    <p className="text-xs text-slate-400">
+                      Filtros rápidos para analisar seu desempenho.
+                    </p>
+                  </div>
+                  <div className="flex items-center gap-1.5">
+                    {(['today', 'week', 'month', 'all'] as const).map(range => (
+                      <button
+                        key={range}
+                        onClick={() => handleHistoryRangeChange(range)}
+                        className={`text-[11px] px-2.5 py-1 rounded-full border ${
+                          historyRange === range
+                            ? 'bg-blue-600 border-blue-500 text-white'
+                            : 'bg-slate-950 border-slate-700 text-slate-200 hover:bg-slate-900'
+                        }`}
+                      >
+                        {range === 'today'
+                          ? 'Hoje'
+                          : range === 'week'
+                            ? 'Semana'
+                            : range === 'month'
+                              ? 'Mês'
+                              : 'Tudo'}
+                      </button>
+                    ))}
+                    <button
+                      onClick={() => handleHistoryRangeChange('custom')}
+                      className={`text-[11px] px-2.5 py-1 rounded-full border ${
+                        historyRange === 'custom'
+                          ? 'bg-blue-600 border-blue-500 text-white'
+                          : 'bg-slate-950 border-slate-700 text-slate-200 hover:bg-slate-900'
+                      }`}
+                    >
+                      Personalizado
+                    </button>
                   </div>
                 </div>
-                <div className="bg-white rounded-2xl shadow-sm border border-slate-200 overflow-hidden">
-                  <div className="hidden md:grid grid-cols-12 bg-slate-50 border-b border-slate-200 p-4 text-xs font-semibold text-slate-500 uppercase"><div className="col-span-2">Data</div><div className="col-span-4">Descrição</div><div className="col-span-2">Categoria</div><div className="col-span-2">Eficiência</div><div className="col-span-1 text-right">Valor</div><div className="col-span-1 text-center">Ações</div></div>
-                  <div className="divide-y divide-slate-100">
-                    {filteredHistory.length === 0 ? <div className="p-8 text-center text-slate-400"><Filter size={48} className="mx-auto mb-2 opacity-20" /><p>Nenhuma transação encontrada neste período.</p></div> : filteredHistory.map(t => (
-                      <div key={t.id} className="hover:bg-slate-50 transition-colors">
-                        <div className="hidden md:grid grid-cols-12 items-center p-4 text-sm">
-                          <div className="col-span-2 text-slate-600">{formatDateBr(t.date)}</div>
-                          <div className="col-span-4 font-medium text-slate-800">{t.description}</div>
-                          <div className="col-span-2"><span className={`px-2 py-1 rounded text-xs border ${t.category ? 'bg-slate-100 text-slate-600 border-slate-200' : 'bg-emerald-100 text-emerald-700 border-emerald-200'}`}>{t.category || 'Entrada'}</span></div>
-                          <div className="col-span-2 text-slate-500 text-xs">{t.mileage ? `${t.mileage}km • ${t.durationHours}h` : '-'}</div>
-                          <div className={`col-span-1 font-bold text-right ${t.type === TransactionType.INCOME ? 'text-emerald-600' : 'text-rose-600'}`}>{t.type === TransactionType.INCOME ? '+' : '-'} {formatCurrency(t.amount)}</div>
-                          <div className="col-span-1 text-center"><button onClick={() => handleDeleteTransaction(t.id)} className="text-slate-400 hover:text-rose-500 p-1"><CloseIcon size={16} /></button></div>
+
+                {historyRange === 'custom' && (
+                  <div className="flex flex-wrap items-center gap-2 text-[11px]">
+                    <div className="flex items-center gap-1">
+                      <span className="text-slate-300">De:</span>
+                      <input
+                        type="date"
+                        value={historyCustomStart}
+                        onChange={e => setHistoryCustomStart(e.target.value)}
+                        className="bg-slate-950 border border-slate-700 rounded-lg px-2 py-1 text-[11px] text-slate-100"
+                      />
+                    </div>
+                    <div className="flex items-center gap-1">
+                      <span className="text-slate-300">Até:</span>
+                      <input
+                        type="date"
+                        value={historyCustomEnd}
+                        onChange={e => setHistoryCustomEnd(e.target.value)}
+                        className="bg-slate-950 border border-slate-700 rounded-lg px-2 py-1 text-[11px] text-slate-100"
+                      />
+                    </div>
+                  </div>
+                )}
+              </div>
+
+              <div className="bg-slate-900/80 border border-slate-800 rounded-2xl p-3 space-y-2">
+                {filteredHistory.length === 0 ? (
+                  <div className="flex items-center gap-2 text-xs text-slate-400">
+                    <Info className="w-3.5 h-3.5 text-blue-400" />
+                    <span>Nenhum lançamento encontrado nesse período.</span>
+                  </div>
+                ) : (
+                  <div className="divide-y divide-slate-800">
+                    {filteredHistory.map((t) => (
+                      <div
+                        key={t.id}
+                        className="flex items-center justify-between gap-2 py-1.5"
+                      >
+                        <div className="flex items-center gap-2 min-w-0">
+                          <div className={`w-6 h-6 rounded-full flex items-center justify-center text-[11px] ${
+                            t.type === TransactionType.INCOME
+                              ? 'bg-emerald-500/10 text-emerald-300 border border-emerald-500/40'
+                              : 'bg-rose-500/10 text-rose-300 border border-rose-500/40'
+                          }`}>
+                            {t.type === TransactionType.INCOME ? <ArrowUpRight className="w-3 h-3" /> : <ArrowDownRight className="w-3 h-3" />}
+                          </div>
+                          <div className="min-w-0">
+                            <p className="text-xs font-medium text-slate-100 truncate">
+                              {t.description || (t.type === TransactionType.INCOME ? 'Entrada' : 'Despesa')}
+                            </p>
+                            <p className="text-[11px] text-slate-400 flex items-center gap-1">
+                              <CalendarClock className="w-3 h-3" />
+                              {formatDateBr(t.date)} • {t.category || 'Sem categoria'}
+                            </p>
+                          </div>
                         </div>
-                        <div className="md:hidden p-4 flex justify-between items-center">
-                          <div className="flex-1 min-w-0 pr-4">
-                            <div className="font-semibold text-slate-800 truncate mb-1">{t.description}</div>
-                            <div className="flex items-center gap-2 text-xs text-slate-500"><span>{formatDateBr(t.date)}</span><span>•</span><span className={`px-1.5 py-0.5 rounded ${t.type === TransactionType.INCOME ? 'bg-emerald-50 text-emerald-700' : 'bg-rose-50 text-rose-700'}`}>{t.category || 'Entrada'}</span></div>
-                          </div>
-                          <div className="flex items-center gap-3">
-                            <div className={`font-bold ${t.type === TransactionType.INCOME ? 'text-emerald-600' : 'text-rose-600'}`}>{t.type === TransactionType.INCOME ? '+' : '-'} {formatCurrency(t.amount)}</div>
-                            <button onClick={() => handleDeleteTransaction(t.id)} className="text-slate-300 hover:text-rose-500 p-1"><Trash2 size={18} /></button>
-                          </div>
+                        <div className="flex items-center gap-2">
+                          {showValues && (
+                            <span className={`text-xs font-semibold ${
+                              t.type === TransactionType.INCOME ? 'text-emerald-400' : 'text-rose-400'
+                            }`}>
+                              {formatCurrency(t.amount)}
+                            </span>
+                          )}
+                          <button
+                            onClick={() => handleDeleteTransaction(t.id)}
+                            className="p-1 rounded-full hover:bg-slate-800 text-slate-400"
+                          >
+                            <Trash2 className="w-3 h-3" />
+                          </button>
                         </div>
                       </div>
                     ))}
                   </div>
-                </div>
+                )}
               </div>
-            )}
-          </>
-        )}
-      </main>
+            </section>
+          )}
 
-      {/* Modals */}
-      <TransactionModal isOpen={isTransModalOpen} onClose={() => setIsTransModalOpen(false)} onSave={handleAddTransaction} onSaveBill={handleSaveBill} categories={categories} />
-      <ShiftModal isOpen={isShiftModalOpen} onClose={() => setIsShiftModalOpen(false)} onSave={handleSaveShift} initialData={shiftState.isActive || shiftState.isPaused ? { amount: currentShiftTotal, mileage: shiftState.km, durationHours: currentShiftHoursPrecise } : null} />
-      <ShiftEntryModal 
-        isOpen={entryModalOpen} 
-        onClose={() => setEntryModalOpen(false)} 
-        category={entryCategory} 
-        currentValue={getCurrentEntryValue()} 
-        onSave={handleEntrySave} 
-        categories={categories} 
-      />
-      <BillModal isOpen={isBillModalOpen} onClose={() => { setIsBillModalOpen(false); setEditingBill(null); }} onSave={handleSaveBill} initialData={editingBill} categories={categories} />
-      <SettingsModal
-        isOpen={isSettingsModalOpen}
-        onClose={() => setIsSettingsModalOpen(false)}
-        workDays={workDays}
-        onSaveWorkDays={setWorkDays}
-        plannedWorkDates={plannedWorkDates}
-        onSavePlannedDates={setPlannedWorkDates}
-        monthlySalaryGoal={monthlySalaryGoal}
-        onSaveSalaryGoal={setMonthlySalaryGoal}
-        currentMonthKey={currentMonthKey}
-        openingBalanceInput={openingBalanceInput}
-        openingBalanceValue={openingBalances[currentMonthKey] || 0}
-        onChangeOpeningBalance={handleOpeningBalanceInputChange}
-        onBlurOpeningBalance={persistOpeningBalance}
-        categories={categories}
-        onAddCategory={handleAddCategory}
-        onEditCategory={handleEditCategory}
-        onDeleteCategory={handleDeleteCategory}
-      />
+          {activeTab === 'reports' && (
+            <section className="space-y-4">
+              <ReportsTab
+                transactions={transactions}
+                bills={bills}
+                shiftState={shiftState}
+                showValues={showValues}
+              />
+            </section>
+          )}
+        </main>
+
+        <footer className="border-t border-slate-800 bg-slate-950/90">
+          <div className="max-w-5xl mx-auto px-4 py-2.5 flex items-center justify-between gap-2">
+            <p className="text-[11px] text-slate-500">
+              FinanDrive • Assistente financeiro para motoristas de app
+            </p>
+            <p className="text-[11px] text-slate-500 flex items-center gap-1">
+              <Gauge className="w-3 h-3" />
+              Versão BETA em evolução contínua
+            </p>
+          </div>
+        </footer>
+      </div>
+
+      {entryModalOpen && entryCategory && (
+        <ShiftEntryModal
+          isOpen={entryModalOpen}
+          onClose={() => setEntryModalOpen(false)}
+          category={entryCategory}
+          onConfirm={handleShiftValueChange}
+        />
+      )}
+
+      {isShiftModalOpen && (
+        <ShiftModal
+          isOpen={isShiftModalOpen}
+          onClose={() => setIsShiftModalOpen(false)}
+          onConfirm={handleSaveShift}
+          shiftState={shiftState}
+        />
+      )}
+
+      {isTransModalOpen && (
+        <TransactionModal
+          isOpen={isTransModalOpen}
+          onClose={() => setIsTransModalOpen(false)}
+          onSave={handleAddTransaction}
+          categories={categories}
+        />
+      )}
+
+      {isBillModalOpen && (
+        <BillModal
+          isOpen={isBillModalOpen}
+          onClose={() => { setIsBillModalOpen(false); setEditingBill(null); }}
+          onSave={handleSaveBill}
+          editingBill={editingBill}
+          categories={categories}
+        />
+      )}
+
+      {isSettingsModalOpen && (
+        <SettingsModal
+          isOpen={isSettingsModalOpen}
+          onClose={() => setIsSettingsModalOpen(false)}
+          workDays={workDays}
+          onWorkDaysChange={setWorkDays}
+          plannedWorkDates={plannedWorkDates}
+          onPlannedWorkDatesChange={setPlannedWorkDates}
+          monthlySalaryGoal={monthlySalaryGoal}
+          onMonthlySalaryGoalChange={setMonthlySalaryGoal}
+          openingBalances={openingBalances}
+          onOpeningBalancesChange={setOpeningBalances}
+          categories={categories}
+          onAddCategory={handleAddCategory}
+          onEditCategory={handleEditCategory}
+          onDeleteCategory={handleDeleteCategory}
+        />
+      )}
     </div>
   );
 }
