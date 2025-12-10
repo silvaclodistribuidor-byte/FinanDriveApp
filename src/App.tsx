@@ -263,8 +263,35 @@ function App() {
           if (data.plannedWorkDates) setPlannedWorkDates(data.plannedWorkDates);
           if (data.monthlySalaryGoal) setMonthlySalaryGoal(data.monthlySalaryGoal);
           if (data.openingBalances) setOpeningBalances(data.openingBalances);
-          if (data.shiftState) setShiftState(data.shiftState);
-          else setShiftState(createInitialShiftState());
+          if (data.shiftState) {
+            let normalizedShift = { ...createInitialShiftState(), ...data.shiftState } as ShiftState;
+
+            // Se o turno estava ativo e não pausado, recuperamos o tempo passado enquanto o app esteve fechado
+            if (normalizedShift.isActive && !normalizedShift.isPaused && normalizedShift.startTime) {
+              const baseStart = typeof normalizedShift.startTime === 'number'
+                ? normalizedShift.startTime
+                : new Date(normalizedShift.startTime).getTime();
+              const secondsSinceStart = Math.max(0, Math.floor((Date.now() - baseStart) / 1000));
+              const previousElapsed = normalizedShift.elapsedSeconds ?? 0;
+              const recalculatedElapsed = Math.max(previousElapsed, secondsSinceStart);
+              normalizedShift = { ...normalizedShift, elapsedSeconds: recalculatedElapsed };
+              // Usamos o elapsed recalculado como base e reiniciamos a referência
+              // para que o timer conte apenas a partir de agora, evitando nova soma
+              // do intervalo desde o start persistido.
+              elapsedBaseRef.current = recalculatedElapsed;
+              shiftStartRef.current = Date.now();
+            } else {
+              // Em pausa ou inativo: usamos o elapsed armazenado e zeramos a contagem corrente
+              elapsedBaseRef.current = normalizedShift.elapsedSeconds ?? 0;
+              shiftStartRef.current = null;
+            }
+
+            setShiftState(normalizedShift);
+          } else {
+            setShiftState(createInitialShiftState());
+            elapsedBaseRef.current = 0;
+            shiftStartRef.current = null;
+          }
         } else {
           console.log('[app] hydration: doc missing, seeding defaults', { userId: user.uid });
           const initial = buildInitialAppState();
@@ -383,26 +410,21 @@ function App() {
       return;
     }
 
-    // Ativo e rodando
+    // Ativo e rodando: ancoramos o timer no tempo atual, usando o elapsed já
+    // calculado como base para evitar somas duplicadas.
     clearShiftTimer();
-    const baselineStart = shiftState.startTime ?? Date.now();
-    const deltaFromStart = Math.max(0, Math.floor((Date.now() - baselineStart) / 1000));
-    const normalizedElapsed = Math.max(shiftState.elapsedSeconds, elapsedBaseRef.current + deltaFromStart);
-
-    if (normalizedElapsed !== shiftState.elapsedSeconds) {
-      elapsedBaseRef.current = normalizedElapsed;
-      setShiftState(prev => ({ ...prev, elapsedSeconds: normalizedElapsed }));
-    } else {
-      elapsedBaseRef.current = shiftState.elapsedSeconds;
-    }
-
-    shiftStartRef.current = Date.now();
+    elapsedBaseRef.current = shiftState.elapsedSeconds;
+    const resumeRef = shiftStartRef.current ?? Date.now();
+    shiftStartRef.current = resumeRef;
 
     const intervalId = window.setInterval(() => {
       if (!shiftStartRef.current) return;
       const elapsedSinceResume = Math.max(0, Math.floor((Date.now() - shiftStartRef.current) / 1000));
       const nextElapsed = elapsedBaseRef.current + elapsedSinceResume;
-      setShiftState(prev => ({ ...prev, elapsedSeconds: nextElapsed }));
+      setShiftState(prev => {
+        if (!prev.isActive || prev.isPaused) return prev;
+        return { ...prev, elapsedSeconds: nextElapsed };
+      });
     }, 1000);
 
     timerRef.current = intervalId;
