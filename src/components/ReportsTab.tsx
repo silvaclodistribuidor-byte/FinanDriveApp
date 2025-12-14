@@ -193,7 +193,7 @@ export const ReportsTab: React.FC<ReportsTabProps> = ({ transactions, bills, sho
               {shiftSummaries.map(shift => (
                 <div key={shift.id} className="bg-white border border-slate-200 rounded-lg p-3 shadow-sm">
                   <div className="flex justify-between text-xs text-slate-500 mb-1">
-                    <span>{new Date(shift.date).toLocaleDateString('pt-BR')}</span>
+                    <span>{parseDateFromInput(shift.date).toLocaleDateString('pt-BR')}</span>
                     <span>{shift.hours.toFixed(2)}h • {shift.km.toFixed(1)} km</span>
                   </div>
                   <div className="grid grid-cols-2 md:grid-cols-4 gap-2 text-sm font-semibold text-slate-800">
