@@ -1,4 +1,4 @@
-import React, { useState, useMemo, useEffect, useRef } from "react";
+import React, { useState, useMemo, useEffect, useRef, Suspense } from "react";
 import { 
   LayoutDashboard, 
   Wallet, 
@@ -34,7 +34,6 @@ import {
   Tags,
   Check
 } from 'lucide-react';
-import { PieChart, Pie, Cell, Tooltip, ResponsiveContainer, Legend } from 'recharts';
 import { onAuthStateChanged } from 'firebase/auth';
 import { StatCard } from './components/StatCard';
 import { TransactionModal } from './components/TransactionModal';
@@ -42,7 +41,6 @@ import { ShiftModal } from './components/ShiftModal';
 import { ShiftEntryModal } from './components/ShiftEntryModal';
 import { BillModal } from './components/BillModal';
 import { SettingsModal } from './components/SettingsModal';
-import { ReportsTab } from './components/ReportsTab';
 import { Login } from './components/Login';
 import { computeMinimumForBills } from './utils/bills';
 import { formatCurrencyInputMask, parseCurrencyInputToNumber, formatCurrencyPtBr } from './utils/currency';
@@ -56,6 +54,14 @@ import {
 } from "./services/firestoreService";
 import { loadShiftStateLocal, saveShiftStateLocal, clearShiftStateLocal } from "./services/shiftLocalStore";
 import { Transaction, TransactionType, ExpenseCategory, Bill, ShiftState, DEFAULT_CATEGORIES, Category } from './types';
+
+// ⚡ Performance: charts/relatórios são carregados sob demanda (code-splitting)
+const ReportsTab = React.lazy(() =>
+  import('./components/ReportsTab').then((m) => ({ default: m.ReportsTab }))
+);
+const DashboardPieChart = React.lazy(() =>
+  import('./components/DashboardPieChart').then((m) => ({ default: m.DashboardPieChart }))
+);
 
 // Usuário usado internamente no app (derivado do Firebase Auth)
 export interface User {
@@ -84,27 +90,7 @@ const formatDateBr = (dateStr: string) => {
   return date.toLocaleDateString('pt-BR');
 };
 
-const RADIAN = Math.PI / 180;
-const renderCustomizedLabel = ({ cx, cy, midAngle, innerRadius, outerRadius, percent }: any) => {
-  const radius = innerRadius + (outerRadius - innerRadius) * 0.5;
-  const x = cx + radius * Math.cos(-midAngle * RADIAN);
-  const y = cy + radius * Math.sin(-midAngle * RADIAN);
 
-  if (percent < 0.05) return null;
-
-  return (
-    <text
-      x={x}
-      y={y}
-      fill="white"
-      textAnchor="middle"
-      dominantBaseline="central"
-      className="text-xs font-bold"
-    >
-      {`${(percent * 100).toFixed(0)}%`}
-    </text>
-  );
-};
 
 const INITIAL_TRANSACTIONS: Transaction[] = [];
 const INITIAL_BILLS: Bill[] = [];
@@ -1261,17 +1247,9 @@ function App() {
                 <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
                   <div className="lg:col-span-2 bg-white p-6 rounded-2xl shadow-sm border border-slate-200">
                     <div className="flex justify-between items-center mb-6"><h3 className="font-bold text-slate-800">Ganhos vs Despesas</h3><div className="text-xs text-slate-500">Visão Geral</div></div>
-                    <div className="h-72 w-full flex items-center justify-center">
-                      <ResponsiveContainer width="100%" height="100%">
-                        <PieChart>
-                          <Pie data={pieData} cx="50%" cy="50%" labelLine={false} label={renderCustomizedLabel} outerRadius="80%" dataKey="value">
-                            {pieData.map((entry, index) => <Cell key={`cell-${index}`} fill={entry.color} />)}
-                          </Pie>
-                          <Legend layout="vertical" verticalAlign="middle" align="right" iconType="circle" />
-                          <Tooltip formatter={(value: number) => [showValues ? `R$ ${value.toFixed(2)}` : 'R$ ****', '']} contentStyle={{ borderRadius: '12px', border: 'none', boxShadow: '0 10px 15px -3px rgb(0 0 0 / 0.1)' }} />
-                        </PieChart>
-                      </ResponsiveContainer>
-                    </div>
+                    <Suspense fallback={<div className="h-72 w-full flex items-center justify-center" />}>
+                      <DashboardPieChart pieData={pieData} showValues={showValues} />
+                    </Suspense>
                   </div>
                   <div className="space-y-6">
                     <div className="bg-white p-6 rounded-2xl shadow-sm border border-slate-200">
@@ -1293,11 +1271,13 @@ function App() {
 
             {/* Reports Content */}
             {activeTab === 'reports' && (
-              <ReportsTab
-                transactions={transactions}
-                bills={bills}
-                showValues={showValues}
-              />
+              <Suspense fallback={<div className="min-h-[200px]" />}>
+                <ReportsTab
+                  transactions={transactions}
+                  bills={bills}
+                  showValues={showValues}
+                />
+              </Suspense>
             )}
 
             {/* Bills Content */}
