@@ -46,6 +46,7 @@ import { ReportsTab } from './components/ReportsTab';
 import { Login } from './components/Login';
 import { computeMinimumForBills } from './utils/bills';
 import { formatCurrencyInputMask, parseCurrencyInputToNumber, formatCurrencyPtBr } from './utils/currency';
+import { useShiftTimer, computeElapsedMinutes } from './hooks/useShiftTimer';
 import {
   loadAppData,
   saveAppData,
@@ -110,6 +111,9 @@ const createInitialShiftState = (): ShiftState => ({
   isActive: false,
   isPaused: false,
   startTime: null,
+  startTimeMs: null,
+  pausedAtMs: null,
+  totalPausedMs: 0,
   elapsedSeconds: 0,
   earnings: { uber: 0, n99: 0, indrive: 0, private: 0 },
   expenses: 0,
@@ -171,9 +175,13 @@ function App() {
   // Shift Logic
   const [shiftState, setShiftState] = useState<ShiftState>(createInitialShiftState());
 
-  const timerRef = useRef<number | null>(null);
-  const shiftStartRef = useRef<number | null>(null);
-  const elapsedBaseRef = useRef<number>(0);
+  const {
+    displayedMinutes,
+    startShift,
+    togglePause,
+    stopShift,
+    editStartTime,
+  } = useShiftTimer(shiftState, setShiftState);
 
   // Remove o balão/flutuante da Vercel (toolbar/badge) que aparece no preview
   useEffect(() => {
@@ -200,13 +208,6 @@ function App() {
 
     return () => observer.disconnect();
   }, []);
-
-  const clearShiftTimer = () => {
-    if (timerRef.current) {
-      clearInterval(timerRef.current);
-      timerRef.current = null;
-    }
-  };
 
   // 1. Monitor Authentication
   useEffect(() => {
@@ -291,32 +292,16 @@ function App() {
           if (data.openingBalances) setOpeningBalances(data.openingBalances);
           if (data.shiftState) {
             let normalizedShift = { ...createInitialShiftState(), ...data.shiftState } as ShiftState;
+            normalizedShift.startTimeMs = normalizedShift.startTimeMs ?? (typeof normalizedShift.startTime === 'number' ? normalizedShift.startTime : null);
+            normalizedShift.pausedAtMs = normalizedShift.pausedAtMs ?? null;
+            normalizedShift.totalPausedMs = normalizedShift.totalPausedMs ?? 0;
 
-            // Se o turno estava ativo e não pausado, recuperamos o tempo passado enquanto o app esteve fechado
-            if (normalizedShift.isActive && !normalizedShift.isPaused && normalizedShift.startTime) {
-              const baseStart = typeof normalizedShift.startTime === 'number'
-                ? normalizedShift.startTime
-                : new Date(normalizedShift.startTime).getTime();
-              const secondsSinceStart = Math.max(0, Math.floor((Date.now() - baseStart) / 1000));
-              const previousElapsed = normalizedShift.elapsedSeconds ?? 0;
-              const recalculatedElapsed = Math.max(previousElapsed, secondsSinceStart);
-              normalizedShift = { ...normalizedShift, elapsedSeconds: recalculatedElapsed };
-              // Usamos o elapsed recalculado como base e reiniciamos a referência
-              // para que o timer conte apenas a partir de agora, evitando nova soma
-              // do intervalo desde o start persistido.
-              elapsedBaseRef.current = recalculatedElapsed;
-              shiftStartRef.current = Date.now();
-            } else {
-              // Em pausa ou inativo: usamos o elapsed armazenado e zeramos a contagem corrente
-              elapsedBaseRef.current = normalizedShift.elapsedSeconds ?? 0;
-              shiftStartRef.current = null;
-            }
+            const minutes = computeElapsedMinutes(normalizedShift, Date.now());
+            normalizedShift = { ...normalizedShift, elapsedSeconds: minutes * 60 };
 
             setShiftState(normalizedShift);
           } else {
             setShiftState(createInitialShiftState());
-            elapsedBaseRef.current = 0;
-            shiftStartRef.current = null;
           }
         } else {
           console.log('[app] hydration: doc missing, seeding defaults', { userId: user.uid });
@@ -420,46 +405,6 @@ function App() {
       });
     }, [user, transactions, bills, categories, shiftState, isLoadingData, workDays, plannedWorkDates, monthlySalaryGoal, openingBalances, hasLoadedData, hasPendingChanges]);
 
-  // Shift Timer (cronômetro simplificado)
-  useEffect(() => {
-    if (!shiftState.isActive) {
-      clearShiftTimer();
-      shiftStartRef.current = null;
-      elapsedBaseRef.current = 0;
-      return;
-    }
-
-    if (shiftState.isPaused) {
-      clearShiftTimer();
-      shiftStartRef.current = null;
-      elapsedBaseRef.current = shiftState.elapsedSeconds;
-      return;
-    }
-
-    // Ativo e rodando: ancoramos o timer no tempo atual, usando o elapsed já
-    // calculado como base para evitar somas duplicadas.
-    clearShiftTimer();
-    elapsedBaseRef.current = shiftState.elapsedSeconds;
-    const resumeRef = shiftStartRef.current ?? Date.now();
-    shiftStartRef.current = resumeRef;
-
-    const intervalId = window.setInterval(() => {
-      if (!shiftStartRef.current) return;
-      const elapsedSinceResume = Math.max(0, Math.floor((Date.now() - shiftStartRef.current) / 1000));
-      const nextElapsed = elapsedBaseRef.current + elapsedSinceResume;
-      setShiftState(prev => {
-        if (!prev.isActive || prev.isPaused) return prev;
-        return { ...prev, elapsedSeconds: nextElapsed };
-      });
-    }, 1000);
-
-    timerRef.current = intervalId;
-
-    return () => {
-      clearShiftTimer();
-    };
-  }, [shiftState.isActive, shiftState.isPaused, shiftState.startTime]);
-
   // Initial Check: Populate planned dates if empty
   useEffect(() => {
     if (!isLoadingData && user && workDays.length > 0) {
@@ -495,8 +440,6 @@ function App() {
     setBills(INITIAL_BILLS);
     setCategories(DEFAULT_CATEGORIES);
     setShiftState(createInitialShiftState());
-    shiftStartRef.current = null;
-    elapsedBaseRef.current = 0;
     setWorkDays([1, 2, 3, 4, 5, 6]);
     setPlannedWorkDates([]);
     setMonthlySalaryGoal(0);
@@ -559,55 +502,15 @@ function App() {
   };
 
   const handleStartShift = () => {
-    const now = Date.now();
-    shiftStartRef.current = now;
-    elapsedBaseRef.current = 0;
-    setShiftState(prev => ({ ...prev, isActive: true, isPaused: false, startTime: now, elapsedSeconds: 0 }));
+    startShift();
   };
 
   const handlePauseShift = () => {
-    setShiftState(prev => {
-      if (!prev.isActive) return prev;
-
-      // Retomar
-      if (prev.isPaused) {
-        const resumeNow = Date.now();
-        shiftStartRef.current = resumeNow;
-        elapsedBaseRef.current = prev.elapsedSeconds;
-        return { ...prev, isPaused: false, startTime: resumeNow };
-      }
-
-      // Pausar
-      const startTs = shiftStartRef.current ?? prev.startTime ?? Date.now();
-      const elapsedSinceStart = Math.max(0, Math.floor((Date.now() - startTs) / 1000));
-      const updatedElapsed = Math.max(
-        prev.elapsedSeconds,
-        elapsedBaseRef.current + elapsedSinceStart
-      );
-      elapsedBaseRef.current = updatedElapsed;
-      shiftStartRef.current = null;
-      clearShiftTimer();
-      return { ...prev, isPaused: true, elapsedSeconds: updatedElapsed };
-    });
+    togglePause();
   };
 
   const handleStopShift = () => {
-    clearShiftTimer();
-    const finalizeElapsed = (prev: ShiftState) => {
-      if (!prev.isActive || prev.isPaused) return prev.elapsedSeconds;
-      const startTs = shiftStartRef.current ?? prev.startTime ?? Date.now();
-      const elapsedSinceStart = Math.max(0, Math.floor((Date.now() - startTs) / 1000));
-      return Math.max(prev.elapsedSeconds, elapsedBaseRef.current + elapsedSinceStart);
-    };
-
-    setShiftState(prev => ({
-      ...prev,
-      isPaused: true,
-      elapsedSeconds: finalizeElapsed(prev),
-    }));
-
-    shiftStartRef.current = null;
-    elapsedBaseRef.current = 0;
+    stopShift();
     setIsShiftModalOpen(true);
   };
 
@@ -621,23 +524,13 @@ function App() {
       const [h, m] = newTimeStr.split(':').map(Number);
       const newStartDate = new Date();
       newStartDate.setHours(h, m, 0, 0);
-      const recalculatedElapsed = Math.max(0, Math.floor((Date.now() - newStartDate.getTime()) / 1000));
-      // Mantemos a base zerada para evitar somar duas vezes o intervalo recém calculado;
-      // o efeito do cronômetro normalizará a contagem a partir desse novo start.
-      elapsedBaseRef.current = 0;
-      shiftStartRef.current = shiftState.isPaused ? null : Date.now();
-
-      setShiftState(prev => ({
-        ...prev,
-        startTime: newStartDate.getTime(),
-        elapsedSeconds: recalculatedElapsed
-      }));
+      editStartTime(newStartDate.getTime());
     }
   };
 
-  const formatTime = (seconds: number) => {
-    const h = Math.floor(seconds / 3600);
-    const m = Math.floor((seconds % 3600) / 60);
+  const formatTime = (minutes: number) => {
+    const h = Math.floor(minutes / 60);
+    const m = minutes % 60;
     return `${h}h ${m.toString().padStart(2, '0')}m`;
   };
 
@@ -943,10 +836,10 @@ function App() {
 
   const currentShiftTotal = shiftState.earnings.uber + shiftState.earnings.n99 + shiftState.earnings.indrive + shiftState.earnings.private;
   const currentShiftLiquid = currentShiftTotal - shiftState.expenses;
-  const currentShiftMinutes = Math.floor(shiftState.elapsedSeconds / 60);
+  const currentShiftMinutes = displayedMinutes;
   const currentShiftRph = (currentShiftMinutes > 0) ? currentShiftTotal / (currentShiftMinutes / 60) : 0;
   const currentShiftRpk = shiftState.km > 0 ? currentShiftTotal / shiftState.km : 0;
-  const currentShiftHoursPrecise = shiftState.elapsedSeconds / 3600;
+  const currentShiftHoursPrecise = displayedMinutes / 60;
 
   const pieData = useMemo(() => [
     { name: 'Ganhos', value: stats.totalIncome, color: '#3b82f6' },
@@ -977,10 +870,8 @@ function App() {
     
     const newTransactions = [incomeTransaction, ...expenseTransactions, ...transactions];
     setTransactions(newTransactions);
-    const resetShiftState = { isActive: false, isPaused: false, startTime: null, elapsedSeconds: 0, earnings: { uber: 0, n99: 0, indrive: 0, private: 0 }, expenses: 0, expenseList: [], km: 0 };
+    const resetShiftState = { isActive: false, isPaused: false, startTime: null, startTimeMs: null, pausedAtMs: null, totalPausedMs: 0, elapsedSeconds: 0, earnings: { uber: 0, n99: 0, indrive: 0, private: 0 }, expenses: 0, expenseList: [], km: 0 };
     setShiftState(resetShiftState);
-    shiftStartRef.current = null;
-    elapsedBaseRef.current = 0;
   };
 
   const handleSaveBill = (billData: Omit<Bill, 'id'>) => {
@@ -1168,7 +1059,7 @@ function App() {
               <div className="bg-slate-900/80 rounded-xl p-1 border border-slate-800 shadow-lg flex flex-col justify-center items-center relative group h-16">
                 <div className="text-slate-500 text-[9px] font-bold uppercase tracking-wider mb-0.5 flex items-center gap-1"><Clock size={9} /> Tempo</div>
                 <div className="text-xl font-mono font-bold text-white tracking-tighter">
-                  {formatTime(shiftState.elapsedSeconds)}
+                  {formatTime(displayedMinutes)}
                 </div>
                 {shiftState.isActive && <button onClick={handleEditStartTime} className="absolute top-1 right-1 p-1 text-white bg-indigo-600 hover:bg-indigo-500 rounded-lg shadow-md transition-colors z-20 border border-white/20"><Edit2 size={10} /></button>}
               </div>
