@@ -175,6 +175,32 @@ function App() {
   const shiftStartRef = useRef<number | null>(null);
   const elapsedBaseRef = useRef<number>(0);
 
+  // Remove o balão/flutuante da Vercel (toolbar/badge) que aparece no preview
+  useEffect(() => {
+    const selectors = [
+      '#vercel-toolbar',
+      '#vercel-badge',
+      '#__vercel',
+      '#__vercel_toolbar',
+      '[data-vercel-toolbar]',
+      '#vercel-live',
+      'iframe[src*="vercel.live"]',
+      'iframe[src*="vercel.com/_vercel"]',
+    ];
+
+    const removeVercelBadge = () => {
+      selectors.forEach((sel) => {
+        document.querySelectorAll(sel).forEach((el) => el.remove());
+      });
+    };
+
+    removeVercelBadge();
+    const observer = new MutationObserver(() => removeVercelBadge());
+    observer.observe(document.body, { childList: true, subtree: true });
+
+    return () => observer.disconnect();
+  }, []);
+
   const clearShiftTimer = () => {
     if (timerRef.current) {
       clearInterval(timerRef.current);
