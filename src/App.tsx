@@ -54,6 +54,7 @@ import {
   logoutUser,
   createDriverDocIfMissing,
 } from "./services/firestoreService";
+import { loadShiftStateLocal, saveShiftStateLocal, clearShiftStateLocal } from "./services/shiftLocalStore";
 import { Transaction, TransactionType, ExpenseCategory, Bill, ShiftState, DEFAULT_CATEGORIES, Category } from './types';
 
 // Usuário usado internamente no app (derivado do Firebase Auth)
@@ -181,7 +182,23 @@ function App() {
     togglePause,
     stopShift,
     editStartTime,
-  } = useShiftTimer(shiftState, setShiftState);
+  } = useShiftTimer(shiftState, setShiftState, (next) => saveShiftStateLocal(next, user?.uid));
+
+  // Persistência local do turno em andamento (evita zerar ao recarregar/fechar o app)
+  useEffect(() => {
+    if (!user) return;
+
+    // Evita sobrescrever o estado local durante a hidratação inicial
+    if (isHydratingRef.current && !hydrationCompleteRef.current) return;
+
+    const isRunning = shiftState.isActive || shiftState.isPaused;
+    if (!isRunning) {
+      clearShiftStateLocal(user.uid);
+      return;
+    }
+
+    saveShiftStateLocal(shiftState, user.uid);
+  }, [user, shiftState]);
 
   // Remove o balão/flutuante da Vercel (toolbar/badge) que aparece no preview
   useEffect(() => {
@@ -247,6 +264,13 @@ function App() {
     isHydratingRef.current = true;
     hydrationCompleteRef.current = false;
 
+    // Pré-carrega o turno do armazenamento local (evita cronômetro zerar antes do Firestore)
+    const localStored = loadShiftStateLocal(user.uid);
+    if (localStored?.shiftState && (localStored.shiftState.isActive || localStored.shiftState.isPaused)) {
+      console.log("[app] hydration prefill: applying local shiftState", { userId: user.uid });
+      setShiftState(localStored.shiftState);
+    }
+
     let cancelled = false;
     let loadErrored = false;
 
@@ -288,18 +312,34 @@ function App() {
 
           if (data.workDays) setWorkDays(data.workDays);
           if (data.plannedWorkDates) setPlannedWorkDates(data.plannedWorkDates);
-          if (data.monthlySalaryGoal) setMonthlySalaryGoal(data.monthlySalaryGoal);
+          if (data.monthlySalaryGoal !== undefined) setMonthlySalaryGoal(data.monthlySalaryGoal);
           if (data.openingBalances) setOpeningBalances(data.openingBalances);
-          if (data.shiftState) {
-            let normalizedShift = { ...createInitialShiftState(), ...data.shiftState } as ShiftState;
-            normalizedShift.startTimeMs = normalizedShift.startTimeMs ?? (typeof normalizedShift.startTime === 'number' ? normalizedShift.startTime : null);
+          const localAfterLoad = loadShiftStateLocal(user.uid);
+          const localShift = localAfterLoad?.shiftState;
+
+          const normalizeShift = (raw: any): ShiftState => {
+            let normalizedShift = { ...createInitialShiftState(), ...raw } as ShiftState;
+            normalizedShift.startTimeMs = normalizedShift.startTimeMs ?? (typeof normalizedShift.startTime === "number" ? normalizedShift.startTime : null);
+            normalizedShift.startTime = normalizedShift.startTimeMs ?? (typeof normalizedShift.startTime === "number" ? normalizedShift.startTime : null);
             normalizedShift.pausedAtMs = normalizedShift.pausedAtMs ?? null;
             normalizedShift.totalPausedMs = normalizedShift.totalPausedMs ?? 0;
+            return normalizedShift;
+          };
 
-            const minutes = computeElapsedMinutes(normalizedShift, Date.now());
-            normalizedShift = { ...normalizedShift, elapsedSeconds: minutes * 60 };
+          let chosenShift: ShiftState | null = null;
+          const remoteShift = data.shiftState ? normalizeShift(data.shiftState) : null;
 
-            setShiftState(normalizedShift);
+          if (localShift && (localShift.isActive || localShift.isPaused)) {
+            // Preferimos o local quando há turno em andamento (evita perda ao recarregar/fechar o app)
+            chosenShift = normalizeShift(localShift);
+          } else if (remoteShift) {
+            chosenShift = remoteShift;
+          }
+
+          if (chosenShift) {
+            const minutes = computeElapsedMinutes(chosenShift, Date.now());
+            chosenShift = { ...chosenShift, elapsedSeconds: minutes * 60 };
+            setShiftState(chosenShift);
           } else {
             setShiftState(createInitialShiftState());
           }
@@ -309,7 +349,9 @@ function App() {
           setTransactions(initial.transactions);
           setBills(initial.bills);
           setCategories(initial.categories);
-          setShiftState(initial.shiftState);
+          const localInMissing = loadShiftStateLocal(user.uid);
+          if (localInMissing?.shiftState && (localInMissing.shiftState.isActive || localInMissing.shiftState.isPaused)) setShiftState(localInMissing.shiftState);
+          else setShiftState(initial.shiftState);
           setWorkDays(initial.workDays);
           setPlannedWorkDates(initial.plannedWorkDates);
           setMonthlySalaryGoal(initial.monthlySalaryGoal);
@@ -433,6 +475,7 @@ function App() {
   // --- Handlers ---
 
   const handleLogout = async () => {
+    clearShiftStateLocal(user?.uid);
     await logoutUser();
     setHasLoadedData(false);
     setHasPendingChanges(false);
@@ -872,6 +915,7 @@ function App() {
     setTransactions(newTransactions);
     const resetShiftState = { isActive: false, isPaused: false, startTime: null, startTimeMs: null, pausedAtMs: null, totalPausedMs: 0, elapsedSeconds: 0, earnings: { uber: 0, n99: 0, indrive: 0, private: 0 }, expenses: 0, expenseList: [], km: 0 };
     setShiftState(resetShiftState);
+    clearShiftStateLocal(user?.uid);
   };
 
   const handleSaveBill = (billData: Omit<Bill, 'id'>) => {
