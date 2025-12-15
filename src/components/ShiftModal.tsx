@@ -1,6 +1,15 @@
 import React, { useState, useEffect } from 'react';
 import { X, Check, Gauge, Clock, DollarSign } from 'lucide-react';
 
+// IMPORTANT: Use local calendar date (not UTC) to avoid saving shifts after ~21:00–22:00
+// as the next day in Brazil (UTC-3) when using toISOString().
+const getLocalISODate = (d: Date = new Date()) => {
+  const yyyy = d.getFullYear();
+  const mm = String(d.getMonth() + 1).padStart(2, '0');
+  const dd = String(d.getDate()).padStart(2, '0');
+  return `${yyyy}-${mm}-${dd}`;
+};
+
 interface ShiftModalProps {
   isOpen: boolean;
   onClose: () => void;
@@ -28,7 +37,7 @@ export const ShiftModal: React.FC<ShiftModalProps> = ({ isOpen, onClose, onSave,
     onSave({
       amount: parseFloat(amount),
       description: 'Turno Finalizado',
-      date: new Date().toISOString().split('T')[0],
+      date: getLocalISODate(),
       mileage: parseFloat(mileage),
       durationHours: parseFloat(hours)
     });
