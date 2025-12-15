@@ -1,6 +1,15 @@
-import React, { useState } from 'react';
+import React, { useEffect, useState } from 'react';
 import { X } from 'lucide-react';
 import { TransactionType, Category } from '../types';
+
+// IMPORTANT: Use local calendar date (not UTC) to avoid launches after ~21:00–22:00
+// being saved as the next day in Brazil (UTC-3) when using toISOString().
+const getLocalISODate = (d: Date = new Date()) => {
+  const yyyy = d.getFullYear();
+  const mm = String(d.getMonth() + 1).padStart(2, '0');
+  const dd = String(d.getDate()).padStart(2, '0');
+  return `${yyyy}-${mm}-${dd}`;
+};
 
 interface TransactionModalProps {
   isOpen: boolean;
@@ -15,7 +24,12 @@ export const TransactionModal: React.FC<TransactionModalProps> = ({ isOpen, onCl
   const [amount, setAmount] = useState('');
   const [description, setDescription] = useState('');
   const [selectedCatId, setSelectedCatId] = useState('');
-  const [date, setDate] = useState(new Date().toISOString().split('T')[0]);
+  const [date, setDate] = useState(getLocalISODate());
+
+  // When reopening the modal on another day, default the date to *today* (local).
+  useEffect(() => {
+    if (isOpen) setDate(getLocalISODate());
+  }, [isOpen]);
 
   if (!isOpen) return null;
 
