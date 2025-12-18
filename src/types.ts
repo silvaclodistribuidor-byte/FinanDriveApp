@@ -48,6 +48,9 @@ export interface ShiftState {
   isActive: boolean;
   isPaused: boolean;
   startTime: number | null;
+  startTimeMs?: number | null;
+  pausedAtMs?: number | null;
+  totalPausedMs?: number;
   elapsedSeconds: number;
   earnings: {
     uber: number;

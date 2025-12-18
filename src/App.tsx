@@ -44,7 +44,16 @@ import { BillModal } from './components/BillModal';
 import { SettingsModal } from './components/SettingsModal';
 import { ReportsTab } from './components/ReportsTab';
 import { Login } from './components/Login';
-import { loadAppData, saveAppData, auth, logoutUser } from "./services/firestoreService";
+import { computeMinimumForBills } from './utils/bills';
+import { formatCurrencyInputMask, parseCurrencyInputToNumber, formatCurrencyPtBr } from './utils/currency';
+import { useShiftTimer, computeElapsedMinutes } from './hooks/useShiftTimer';
+import {
+  loadAppData,
+  saveAppData,
+  auth,
+  logoutUser,
+  createDriverDocIfMissing,
+} from "./services/firestoreService";
 import { Transaction, TransactionType, ExpenseCategory, Bill, ShiftState, DEFAULT_CATEGORIES, Category } from './types';
 
 // Usuário usado internamente no app (derivado do Firebase Auth)
@@ -98,10 +107,38 @@ const renderCustomizedLabel = ({ cx, cy, midAngle, innerRadius, outerRadius, per
 
 const INITIAL_TRANSACTIONS: Transaction[] = [];
 const INITIAL_BILLS: Bill[] = [];
+const createInitialShiftState = (): ShiftState => ({
+  isActive: false,
+  isPaused: false,
+  startTime: null,
+  startTimeMs: null,
+  pausedAtMs: null,
+  totalPausedMs: 0,
+  elapsedSeconds: 0,
+  earnings: { uber: 0, n99: 0, indrive: 0, private: 0 },
+  expenses: 0,
+  expenseList: [],
+  km: 0,
+});
+
+const buildInitialAppState = () => ({
+  transactions: INITIAL_TRANSACTIONS,
+  bills: INITIAL_BILLS,
+  categories: DEFAULT_CATEGORIES,
+  shiftState: createInitialShiftState(),
+  workDays: [1, 2, 3, 4, 5, 6],
+  plannedWorkDates: [],
+  monthlySalaryGoal: 0,
+  openingBalances: {},
+});
 
 function App() {
   const [user, setUser] = useState<User | null>(null);
   const [authLoading, setAuthLoading] = useState(true);
+  const [hasLoadedData, setHasLoadedData] = useState(false);
+  const [hasPendingChanges, setHasPendingChanges] = useState(false);
+  const isHydratingRef = useRef(false);
+  const hydrationCompleteRef = useRef(false);
 
   // App Data State
   const [transactions, setTransactions] = useState<Transaction[]>(INITIAL_TRANSACTIONS);
@@ -112,11 +149,13 @@ function App() {
   const [workDays, setWorkDays] = useState<number[]>([1, 2, 3, 4, 5, 6]); // 0=Sun, 6=Sat (Generic Preference)
   const [plannedWorkDates, setPlannedWorkDates] = useState<string[]>([]); // Specific dates YYYY-MM-DD
   const [monthlySalaryGoal, setMonthlySalaryGoal] = useState<number>(0);
+  const [openingBalances, setOpeningBalances] = useState<Record<string, number>>({});
+  const [openingBalanceInput, setOpeningBalanceInput] = useState<string>('');
 
   // UI State
   const [isLoadingData, setIsLoadingData] = useState(false);
   const [showValues, setShowValues] = useState(true);
-  const [activeTab, setActiveTab] = useState<'dashboard' | 'bills' | 'history' | 'shift' | 'reports'>('dashboard');
+  const [activeTab, setActiveTab] = useState<'dashboard' | 'bills' | 'history' | 'shift' | 'reports'>('shift');
   
   // Modals
   const [isTransModalOpen, setIsTransModalOpen] = useState(false);
@@ -134,21 +173,44 @@ function App() {
   const [entryCategory, setEntryCategory] = useState<'uber' | '99' | 'indrive' | 'private' | 'km' | 'expense' | null>(null);
 
   // Shift Logic
-  const [shiftState, setShiftState] = useState<ShiftState>({
-    isActive: false,
-    isPaused: false,
-    startTime: null,
-    elapsedSeconds: 0,
-    earnings: { uber: 0, n99: 0, indrive: 0, private: 0 },
-    expenses: 0,
-    expenseList: [],
-    km: 0
-  });
+  const [shiftState, setShiftState] = useState<ShiftState>(createInitialShiftState());
 
-  const timerRef = useRef<number | null>(null);
+  const {
+    displayedMinutes,
+    startShift,
+    togglePause,
+    stopShift,
+    editStartTime,
+  } = useShiftTimer(shiftState, setShiftState);
+
+  // Remove o balão/flutuante da Vercel (toolbar/badge) que aparece no preview
+  useEffect(() => {
+    const selectors = [
+      '#vercel-toolbar',
+      '#vercel-badge',
+      '#__vercel',
+      '#__vercel_toolbar',
+      '[data-vercel-toolbar]',
+      '#vercel-live',
+      'iframe[src*="vercel.live"]',
+      'iframe[src*="vercel.com/_vercel"]',
+    ];
+
+    const removeVercelBadge = () => {
+      selectors.forEach((sel) => {
+        document.querySelectorAll(sel).forEach((el) => el.remove());
+      });
+    };
+
+    removeVercelBadge();
+    const observer = new MutationObserver(() => removeVercelBadge());
+    observer.observe(document.body, { childList: true, subtree: true });
+
+    return () => observer.disconnect();
+  }, []);
 
   // 1. Monitor Authentication
- useEffect(() => {
+  useEffect(() => {
     const unsubscribe = onAuthStateChanged(auth as any, (firebaseUser) => {
       if (firebaseUser) {
         setUser({ uid: firebaseUser.uid, email: firebaseUser.email ?? null });
@@ -160,80 +222,188 @@ function App() {
     return () => unsubscribe();
   }, []);
 
- // 2. Load Data
+  // 2. Load Data and create only when missing
   useEffect(() => {
-    if (user) {
-      setIsLoadingData(true);
-      loadAppData(user.uid).then((data) => {
-        if (data) {
+    if (!user) {
+      setHasLoadedData(false);
+      setHasPendingChanges(false);
+      hydrationCompleteRef.current = false;
+      setTransactions(INITIAL_TRANSACTIONS);
+      setBills(INITIAL_BILLS);
+      setCategories(DEFAULT_CATEGORIES);
+      setShiftState(createInitialShiftState());
+      setWorkDays([1, 2, 3, 4, 5, 6]);
+      setPlannedWorkDates([]);
+      setMonthlySalaryGoal(0);
+      setOpeningBalances({});
+      return;
+    }
+
+    console.log('[app] onAuthStateChanged -> start hydration', { userId: user.uid });
+
+    setHasLoadedData(false);
+    setHasPendingChanges(false);
+    setIsLoadingData(true);
+    isHydratingRef.current = true;
+    hydrationCompleteRef.current = false;
+
+    let cancelled = false;
+    let loadErrored = false;
+
+    loadAppData(user.uid)
+      .then(async ({ data, exists }) => {
+        if (cancelled) return;
+
+        if (exists && data) {
+          console.log('[app] hydration: doc exists, applying state', {
+            userId: user.uid,
+            summary: {
+              transactions: Array.isArray(data.transactions) ? data.transactions.length : 0,
+              bills: Array.isArray(data.bills) ? data.bills.length : 0,
+              categories: Array.isArray(data.categories) ? data.categories.length : 0,
+              hasShiftState: Boolean(data.shiftState),
+            },
+          });
           if (data.transactions) setTransactions(data.transactions);
           else setTransactions([]);
-          
+
           if (data.bills) setBills(data.bills);
           else setBills([]);
 
           if (data.categories) {
             if (data.categories.length > 0 && typeof data.categories[0] === 'string') {
-               const migratedCats: Category[] = data.categories.map((c: string, i: number) => ({
-                 id: `migrated_${i}_${Date.now()}`,
-                 name: c,
-                 type: 'both',
-                 driverId: user.uid
-               }));
-               setCategories(migratedCats);
+              const migratedCats: Category[] = data.categories.map((c: string, i: number) => ({
+                id: `migrated_${i}_${Date.now()}`,
+                name: c,
+                type: 'both',
+                driverId: user.uid,
+              }));
+              setCategories(migratedCats);
             } else {
-               setCategories(data.categories);
+              setCategories(data.categories);
             }
           } else {
             setCategories(DEFAULT_CATEGORIES);
           }
-          
-          // Settings
+
           if (data.workDays) setWorkDays(data.workDays);
           if (data.plannedWorkDates) setPlannedWorkDates(data.plannedWorkDates);
           if (data.monthlySalaryGoal) setMonthlySalaryGoal(data.monthlySalaryGoal);
+          if (data.openingBalances) setOpeningBalances(data.openingBalances);
+          if (data.shiftState) {
+            let normalizedShift = { ...createInitialShiftState(), ...data.shiftState } as ShiftState;
+            normalizedShift.startTimeMs = normalizedShift.startTimeMs ?? (typeof normalizedShift.startTime === 'number' ? normalizedShift.startTime : null);
+            normalizedShift.pausedAtMs = normalizedShift.pausedAtMs ?? null;
+            normalizedShift.totalPausedMs = normalizedShift.totalPausedMs ?? 0;
 
-          if (data.shiftState) setShiftState(data.shiftState);
+            const minutes = computeElapsedMinutes(normalizedShift, Date.now());
+            normalizedShift = { ...normalizedShift, elapsedSeconds: minutes * 60 };
+
+            setShiftState(normalizedShift);
+          } else {
+            setShiftState(createInitialShiftState());
+          }
         } else {
-          setTransactions([]);
-          setBills([]);
-          setCategories(DEFAULT_CATEGORIES);
+          console.log('[app] hydration: doc missing, seeding defaults', { userId: user.uid });
+          const initial = buildInitialAppState();
+          setTransactions(initial.transactions);
+          setBills(initial.bills);
+          setCategories(initial.categories);
+          setShiftState(initial.shiftState);
+          setWorkDays(initial.workDays);
+          setPlannedWorkDates(initial.plannedWorkDates);
+          setMonthlySalaryGoal(initial.monthlySalaryGoal);
+          setOpeningBalances(initial.openingBalances);
+
+          await createDriverDocIfMissing(initial, user.uid);
         }
+      })
+      .catch((error) => {
+        loadErrored = true;
+        console.error('[app] hydration error while loading user data', { userId: user.uid, error });
+        setTransactions([]);
+        setBills([]);
+        setCategories(DEFAULT_CATEGORIES);
+      })
+      .finally(() => {
+        if (cancelled) return;
+        if (loadErrored) {
+          setIsLoadingData(false);
+          hydrationCompleteRef.current = false;
+          isHydratingRef.current = false;
+          console.log('[app] hydration aborted due to load error', { userId: user.uid });
+          return;
+        }
+        setHasLoadedData(true);
         setIsLoadingData(false);
+        hydrationCompleteRef.current = true;
+        console.log('[app] hydration complete', { userId: user.uid });
+        setTimeout(() => {
+          isHydratingRef.current = false;
+          console.log('[app] hydration guard released', { userId: user.uid });
+        }, 0);
       });
-    }
+
+    return () => {
+      cancelled = true;
+      isHydratingRef.current = false;
+      hydrationCompleteRef.current = false;
+    };
   }, [user]);
 
-  // 3. Save Data
+  // 3. Mark local changes only after hydration
   useEffect(() => {
-    if (!user || isLoadingData) return;
-    const payload = { 
-      transactions, 
-      bills, 
-      categories, 
-      shiftState, 
-      workDays, 
-      plannedWorkDates, 
-      monthlySalaryGoal 
-    };
-    saveAppData(payload, user.uid).catch((error) => {
-      console.error("Erro ao salvar dados no Firestore:", error);
+    if (!user || !hasLoadedData || isLoadingData || isHydratingRef.current || !hydrationCompleteRef.current) return;
+    console.log('[app] local state changed -> pending changes flagged', {
+      userId: user.uid,
+      guard: {
+        hasLoadedData,
+        isLoadingData,
+        isHydrating: isHydratingRef.current,
+        hydrationComplete: hydrationCompleteRef.current,
+      },
     });
-  }, [transactions, bills, categories, shiftState, workDays, plannedWorkDates, monthlySalaryGoal, user, isLoadingData]);
+    setHasPendingChanges(true);
+  }, [transactions, bills, categories, shiftState, workDays, plannedWorkDates, monthlySalaryGoal, openingBalances, user, hasLoadedData, isLoadingData]);
 
-  // Shift Timer
+  // 4. Save Data only when there are pending changes post-hydration
   useEffect(() => {
-    if (shiftState.isActive && !shiftState.isPaused) {
-      timerRef.current = window.setInterval(() => {
-        setShiftState(prev => ({ ...prev, elapsedSeconds: prev.elapsedSeconds + 1 }));
-      }, 1000);
-    } else {
-      if (timerRef.current) clearInterval(timerRef.current);
-    }
-    return () => {
-      if (timerRef.current) clearInterval(timerRef.current);
+    if (!user || isLoadingData || !hasLoadedData || !hasPendingChanges || isHydratingRef.current || !hydrationCompleteRef.current) return;
+
+    const payload = {
+      transactions,
+      bills,
+      categories,
+      shiftState,
+      workDays,
+      plannedWorkDates,
+      monthlySalaryGoal,
+      openingBalances,
     };
-  }, [shiftState.isActive, shiftState.isPaused]);
+
+    console.log('[app] auto-save triggered', {
+      userId: user.uid,
+      summary: {
+        transactions: payload.transactions.length,
+        bills: payload.bills.length,
+        categories: payload.categories.length,
+        hasShiftState: Boolean(payload.shiftState),
+      },
+      guards: {
+        hasLoadedData,
+        isLoadingData,
+        hasPendingChanges,
+        isHydrating: isHydratingRef.current,
+        hydrationComplete: hydrationCompleteRef.current,
+      },
+    });
+
+    saveAppData(payload, user.uid)
+      .then(() => setHasPendingChanges(false))
+      .catch((error) => {
+        console.error("Erro ao salvar dados no Firestore:", error);
+      });
+    }, [user, transactions, bills, categories, shiftState, isLoadingData, workDays, plannedWorkDates, monthlySalaryGoal, openingBalances, hasLoadedData, hasPendingChanges]);
 
   // Initial Check: Populate planned dates if empty
   useEffect(() => {
@@ -264,9 +434,15 @@ function App() {
 
   const handleLogout = async () => {
     await logoutUser();
-    setTransactions([]);
-    setBills([]);
-    setShiftState({ isActive: false, isPaused: false, startTime: null, elapsedSeconds: 0, earnings: { uber: 0, n99: 0, indrive: 0, private: 0 }, expenses: 0, expenseList: [], km: 0 });
+    setHasLoadedData(false);
+    setHasPendingChanges(false);
+    setTransactions(INITIAL_TRANSACTIONS);
+    setBills(INITIAL_BILLS);
+    setCategories(DEFAULT_CATEGORIES);
+    setShiftState(createInitialShiftState());
+    setWorkDays([1, 2, 3, 4, 5, 6]);
+    setPlannedWorkDates([]);
+    setMonthlySalaryGoal(0);
   };
 
   const handleAddCategory = (name: string, type: 'income' | 'expense' | 'both') => {
@@ -296,13 +472,13 @@ function App() {
 
   const handleEntrySave = (value: number, description?: string, expenseCategory?: ExpenseCategory) => {
     if (!entryCategory) return;
-    
+
     setShiftState(prev => {
       const newState = { ...prev };
       if (entryCategory === 'uber') newState.earnings.uber = value;
       else if (entryCategory === '99') newState.earnings.n99 = value;
       else if (entryCategory === 'indrive') newState.earnings.indrive = value;
-      else if (entryCategory === 'private') newState.earnings.private = value;
+      else if (entryCategory === 'private') newState.earnings.private += value;
       else if (entryCategory === 'km') newState.km += value;
       else if (entryCategory === 'expense') {
         newState.expenses += value;
@@ -317,16 +493,24 @@ function App() {
     });
   };
 
+  const handleManualKmAdjust = () => {
+    const newKmStr = window.prompt("Ajustar KM total do turno:", shiftState.km.toFixed(1));
+    if (newKmStr === null) return;
+    const parsed = parseFloat(newKmStr.replace(',', '.'));
+    if (Number.isNaN(parsed) || parsed < 0) return;
+    setShiftState(prev => ({ ...prev, km: parsed }));
+  };
+
   const handleStartShift = () => {
-    setShiftState(prev => ({ ...prev, isActive: true, isPaused: false, startTime: Date.now() }));
+    startShift();
   };
 
   const handlePauseShift = () => {
-    setShiftState(prev => ({ ...prev, isPaused: !prev.isPaused }));
+    togglePause();
   };
 
   const handleStopShift = () => {
-    setShiftState(prev => ({ ...prev, isPaused: true }));
+    stopShift();
     setIsShiftModalOpen(true);
   };
 
@@ -335,23 +519,18 @@ function App() {
     const currentStart = shiftState.startTime ? new Date(shiftState.startTime) : new Date();
     const defaultTime = `${String(currentStart.getHours()).padStart(2, '0')}:${String(currentStart.getMinutes()).padStart(2, '0')}`;
     const newTimeStr = window.prompt("Ajustar horário de início (HH:mm):", defaultTime);
-    
+
     if (newTimeStr && /^\d{2}:\d{2}$/.test(newTimeStr)) {
       const [h, m] = newTimeStr.split(':').map(Number);
       const newStartDate = new Date();
       newStartDate.setHours(h, m, 0, 0);
-      const newElapsed = Math.floor((Date.now() - newStartDate.getTime()) / 1000);
-      setShiftState(prev => ({
-        ...prev,
-        startTime: newStartDate.getTime(),
-        elapsedSeconds: Math.max(0, newElapsed)
-      }));
+      editStartTime(newStartDate.getTime());
     }
   };
 
-  const formatTime = (seconds: number) => {
-    const h = Math.floor(seconds / 3600);
-    const m = Math.floor((seconds % 3600) / 60);
+  const formatTime = (minutes: number) => {
+    const h = Math.floor(minutes / 60);
+    const m = minutes % 60;
     return `${h}h ${m.toString().padStart(2, '0')}m`;
   };
 
@@ -360,6 +539,12 @@ function App() {
     return new Intl.NumberFormat('pt-BR', { style: 'currency', currency: 'BRL' }).format(val);
   };
 
+  const currentMonthKey = useMemo(() => getTodayString().substring(0, 7), []);
+
+  useEffect(() => {
+    setOpeningBalanceInput(formatCurrencyPtBr(openingBalances[currentMonthKey] || 0));
+  }, [openingBalances, currentMonthKey]);
+
   // --- SMART CALCULATIONS ---
   const stats = useMemo(() => {
     const todayStr = getTodayString();
@@ -367,46 +552,66 @@ function App() {
     
     // Shift & Basic Income
     const currentShiftEarnings = shiftState.earnings.uber + shiftState.earnings.n99 + shiftState.earnings.indrive + shiftState.earnings.private;
-    const effectiveShiftEarnings = shiftState.isActive ? currentShiftEarnings : 0;
+    const activeShiftExpenses = shiftState.expenses;
 
-    const totalIncome = transactions.filter(t => t.type === TransactionType.INCOME).reduce((acc, curr) => acc + curr.amount, 0);
-    const totalExpense = transactions.filter(t => t.type === TransactionType.EXPENSE).reduce((acc, curr) => acc + curr.amount, 0);
-    const netProfit = totalIncome - totalExpense;
-    const profitMargin = totalIncome > 0 ? (netProfit / totalIncome) * 100 : 0;
+    // Enquanto o turno está ativo ou pausado, o painel de controle não deve incorporar os números do turno
+    // nos cálculos financeiros; somente após o encerramento (quando o turno for salvo) os lançamentos serão
+    // enviados ao financeiro. A aba de Turno continua usando os valores do turno em andamento.
+    const shiftClosedForFinance = !(shiftState.isActive || shiftState.isPaused || isShiftModalOpen);
+    const effectiveShiftEarningsFinance = shiftClosedForFinance ? currentShiftEarnings : 0;
+    const effectiveShiftExpensesFinance = shiftClosedForFinance ? activeShiftExpenses : 0;
+
+    const incomeTransactionsThisMonth = transactions
+      .filter(t => t.type === TransactionType.INCOME && t.date.startsWith(currentMonthPrefix));
+    const expenseTransactionsThisMonth = transactions
+      .filter(t => t.type === TransactionType.EXPENSE && t.date.startsWith(currentMonthPrefix));
+
+    // Filtramos as contas do mês antes de usá-las nos cálculos de despesas
+    const billsThisMonth = bills.filter(b => b.dueDate.startsWith(currentMonthPrefix));
+
+    const monthlyIncomeFromTransactions = incomeTransactionsThisMonth.reduce((acc, curr) => acc + curr.amount, 0);
+    const monthlyExpensesFromTransactions = expenseTransactionsThisMonth.reduce((acc, curr) => acc + curr.amount, 0);
+    const monthlyExpensesFromBillsPaid = billsThisMonth
+      .filter(b => b.isPaid)
+      .reduce((acc, b) => acc + b.amount, 0);
+
+    // Painel de controle (financeiro) usa apenas lançamentos fechados + turno encerrado
+    const totalIncomeFinance = monthlyIncomeFromTransactions + effectiveShiftEarningsFinance;
+    const totalExpenseFinance = monthlyExpensesFromTransactions + monthlyExpensesFromBillsPaid + effectiveShiftExpensesFinance;
+    const netProfitFinance = totalIncomeFinance - totalExpenseFinance;
+
+    // Aba de turno considera o turno em andamento
+    const totalIncomeShift = monthlyIncomeFromTransactions + currentShiftEarnings;
+    const totalExpenseShift = monthlyExpensesFromTransactions + monthlyExpensesFromBillsPaid + activeShiftExpenses;
+    const netProfitShift = totalIncomeShift - totalExpenseShift;
+
+    const monthlyNetProfit = monthlyIncomeFromTransactions - (monthlyExpensesFromTransactions + monthlyExpensesFromBillsPaid);
+    const profitMargin = totalIncomeFinance > 0 ? (netProfitFinance / totalIncomeFinance) * 100 : 0;
     
     // Monthly Vars
-    const billsThisMonth = bills.filter(b => b.dueDate.startsWith(currentMonthPrefix));
-    const totalMonthlyExpenses = billsThisMonth.reduce((acc, b) => acc + b.amount, 0); 
+    const totalMonthlyExpenses = billsThisMonth.reduce((acc, b) => acc + b.amount, 0);
     const D = totalMonthlyExpenses;
 
-    const savedIncomeThisMonth = transactions
-      .filter(t => t.type === TransactionType.INCOME && t.date.startsWith(currentMonthPrefix))
-      .reduce((acc, t) => acc + t.amount, 0);
-    
-    const F = savedIncomeThisMonth + effectiveShiftEarnings;
+    const savedIncomeThisMonth = monthlyIncomeFromTransactions;
+
+    const F = savedIncomeThisMonth + effectiveShiftEarningsFinance;
     const S = monthlySalaryGoal || 0;
 
     // Daily Logic (STABLE GOAL)
     const savedIncomeToday = transactions
       .filter(t => t.type === TransactionType.INCOME && t.date === todayStr)
       .reduce((acc, t) => acc + t.amount, 0);
-    
-    const F_today = savedIncomeToday + effectiveShiftEarnings;
-    
-    // Calculate Goal based on START OF DAY state
-    const F_start_of_day = Math.max(0, F - F_today);
 
-    // Monthly Status Calc
-    const expensesPaid = Math.min(F, D);
-    const expensesRemaining = Math.max(0, D - expensesPaid);
-    const salaryAccumulated = Math.max(0, F - D);
-    const salaryRemaining = (S > 0) ? Math.max(0, S - salaryAccumulated) : 0;
+    // Para metas do turno, o faturamento do dia inclui o turno em andamento
+    const F_today = savedIncomeToday + currentShiftEarnings;
 
-    // Daily Target Calc (Based on Start of Day)
-    const expensesPaidStart = Math.min(F_start_of_day, D);
-    const expensesRemainingStart = Math.max(0, D - expensesPaidStart);
-    const salaryAccumulatedStart = Math.max(0, F_start_of_day - D);
-    const salaryRemainingStart = (S > 0) ? Math.max(0, S - salaryAccumulatedStart) : 0;
+    // Monthly Status Calc (progress bar usa faturamento bruto + ganhos do turno ativo)
+    const salaryAccumulatedForProgress = Math.max(0, F);
+    const salaryRemainingForProgress = S > 0 ? Math.max(0, S - salaryAccumulatedForProgress) : 0;
+
+    // Daily Target Calc (meta do dia congelada no início, sem os ganhos do turno ativo)
+    const salaryAccumulatedStart = Math.max(0, savedIncomeThisMonth);
+    const salaryRemainingStart = S > 0 ? Math.max(0, S - salaryAccumulatedStart) : 0;
 
     const countWorkDays = (startStr: string, endStr: string) => {
       return plannedWorkDates.filter(d => d >= startStr && d <= endStr).length;
@@ -422,14 +627,44 @@ function App() {
     }
     if (lastExpenseDate < todayStr) lastExpenseDate = todayStr;
 
+    const pendingBillsTotalMonth = unpaidBillsThisMonth.reduce((acc, b) => acc + b.amount, 0);
+    const openingBalanceForMonth = openingBalances[currentMonthPrefix] || 0;
+    // Bill coverage: use monthly net profit (including current shift earnings/expenses) plus the opening balance
+    // Cobertura de contas para o painel (financeiro) — ignora turno em andamento
+    const { cashForBills: cashForBillsDashboard, minimumForBills: minimumForBillsDashboard } = computeMinimumForBills(
+      pendingBillsTotalMonth,
+      openingBalanceForMonth,
+      netProfitFinance,
+    );
+
+    // Cobertura de contas para a aba de turno — considera o turno atual
+    const { cashForBills: cashForBillsShift, minimumForBills: minimumForBillsShift } = computeMinimumForBills(
+      pendingBillsTotalMonth,
+      openingBalanceForMonth,
+      netProfitShift,
+    );
+
+    // Mantemos o alvo diário de contas estável (sem os ganhos do turno em andamento),
+    // mas exibimos o valor faltante para contas já descontando o turno atual em uma célula dedicada.
+    const { minimumForBills: minimumForBillsShiftFrozen } = computeMinimumForBills(
+      pendingBillsTotalMonth,
+      openingBalanceForMonth,
+      netProfitFinance,
+    );
+
+    const cashOnHand = openingBalanceForMonth + netProfitFinance;
+
     const daysRemainingForExpenses = Math.max(1, countWorkDays(todayStr, lastExpenseDate));
-    const expenseTargetToday = expensesRemainingStart / daysRemainingForExpenses;
+    // O mínimo diário de contas usa o cenário congelado (sem os ganhos do turno em andamento)
+    // para manter o valor cheio, enquanto o "falta p/ meta contas" considera o turno atual.
+    const expenseTargetToday = minimumForBillsShiftFrozen > 0 ? minimumForBillsShiftFrozen / daysRemainingForExpenses : 0;
 
     const endOfMonth = new Date(new Date().getFullYear(), new Date().getMonth() + 1, 0);
     const endOfMonthStr = [endOfMonth.getFullYear(), String(endOfMonth.getMonth() + 1).padStart(2,'0'), String(endOfMonth.getDate()).padStart(2,'0')].join('-');
     const daysRemainingForSalary = Math.max(1, countWorkDays(todayStr, endOfMonthStr));
 
     const salaryTargetToday = S > 0 ? salaryRemainingStart / daysRemainingForSalary : 0;
+
 
     let dailyGoal = 0;
     if (S > 0) {
@@ -439,69 +674,127 @@ function App() {
     }
 
     // NEW LOGIC: Remaining to Goal
+    const remainingAccountsToday = Math.max(0, expenseTargetToday - F_today);
+    const remainingSalaryToday = Math.max(0, salaryTargetToday - F_today);
+
     let remainingForToday = Math.max(0, dailyGoal - F_today);
     let isGoalMet = F_today >= dailyGoal;
+
+    const nextWorkday = plannedWorkDates
+      .filter((d) => d > todayStr)
+      .sort()[0] || todayStr;
+
+    const showNextDayTargets = isGoalMet && !shiftState.isActive && !shiftState.isPaused;
+
+    let displayFToday = F_today;
+    let displayExpenseTarget = expenseTargetToday;
+    let displaySalaryTarget = salaryTargetToday;
+    let displayDailyGoal = dailyGoal;
+    let displayRemainingAccounts = remainingAccountsToday;
+    let displayRemainingSalary = remainingSalaryToday;
+    let displayRemainingForToday = remainingForToday;
+    let displayIsGoalMet = isGoalMet;
+
+    if (showNextDayTargets) {
+      const daysRemainingExpensesNext = Math.max(1, countWorkDays(nextWorkday, lastExpenseDate));
+      const daysRemainingSalaryNext = Math.max(1, countWorkDays(nextWorkday, endOfMonthStr));
+
+      const expenseTargetNext = minimumForBillsShiftFrozen > 0 ? minimumForBillsShiftFrozen / daysRemainingExpensesNext : 0;
+      const salaryTargetNext = S > 0 ? salaryRemainingStart / daysRemainingSalaryNext : 0;
+      const dailyGoalNext = S > 0 ? Math.max(expenseTargetNext, salaryTargetNext) : expenseTargetNext;
+
+      displayFToday = 0;
+      displayExpenseTarget = expenseTargetNext;
+      displaySalaryTarget = salaryTargetNext;
+      displayDailyGoal = dailyGoalNext;
+      displayRemainingAccounts = Math.max(0, expenseTargetNext);
+      displayRemainingSalary = Math.max(0, salaryTargetNext);
+      displayRemainingForToday = dailyGoalNext;
+      displayIsGoalMet = false;
+    }
     
     // Status Color
     let dailyStatusColor = "bg-emerald-600";
-    let dailyStatusMessage = "Parabéns! Você bateu a meta de hoje.";
+    let dailyStatusMessage = showNextDayTargets
+      ? "Metas de hoje batidas. Veja a meta do próximo dia."
+      : "Parabéns! Você bateu a meta de hoje.";
 
-    if (!isGoalMet) {
-      if (F_today < expenseTargetToday) {
+    if (!displayIsGoalMet && !showNextDayTargets) {
+      if (minimumForBillsShift > 0 && displayFToday < displayExpenseTarget) {
         dailyStatusColor = "bg-rose-600";
         dailyStatusMessage = "Atenção: Mínimo para contas ainda não atingido.";
+      } else if (minimumForBillsShift === 0 && salaryRemainingStart > 0) {
+        dailyStatusColor = "bg-amber-500";
+        dailyStatusMessage = "Contas garantidas! Foque na meta salarial.";
       } else {
         dailyStatusColor = "bg-amber-500";
-        dailyStatusMessage = "Contas garantidas! Buscando a meta de salário.";
+        dailyStatusMessage = "Continue avançando na meta do dia.";
       }
-    } else {
+    } else if (displayIsGoalMet) {
         dailyStatusColor = "bg-emerald-600";
-        const surplus = F_today - dailyGoal;
-        dailyStatusMessage = surplus > 0 
-          ? `Excelente! R$ ${formatCurrency(surplus, true)} acima da meta.` 
+        const surplus = displayFToday - displayDailyGoal;
+        dailyStatusMessage = surplus > 0
+          ? `Excelente! R$ ${formatCurrency(surplus, true)} acima da meta.`
           : "Meta exata atingida!";
     }
 
-    // Monthly Status
-    let statusColor = "bg-emerald-600";
-    let statusMessage = "Parabéns! Meta mensal atingida.";
-    let displayGoal = 0;
+    const remainingToMonthlyGoal = salaryRemainingForProgress;
+    const billsCovered = minimumForBillsDashboard === 0;
+    const salaryGoalMet = S > 0 ? remainingToMonthlyGoal === 0 : false;
 
-    if (S > 0) {
-        displayGoal = S;
-        if (F < D) {
-            statusColor = "bg-rose-600";
-            statusMessage = `Faltam ${formatCurrency(expensesRemaining, true)} para garantir as contas do mês!`;
-        } else if (F < S) {
-            statusColor = "bg-amber-500";
-            statusMessage = `Contas cobertas. Faltam ${formatCurrency(salaryRemaining, true)} para o salário.`;
-        }
-    } else {
-        displayGoal = D;
-        if (F < D) {
-            statusColor = "bg-rose-600";
-            statusMessage = `Faltam ${formatCurrency(expensesRemaining, true)} para cobrir as despesas!`;
-        }
+    let statusColor = "bg-emerald-600";
+    let statusMessage = "✅ Contas do mês garantidas com o lucro atual.";
+    let displayGoal = remainingToMonthlyGoal;
+
+    if (!billsCovered) {
+      statusColor = "bg-rose-600";
+      statusMessage = `Faltam ${formatCurrency(minimumForBillsDashboard, true)} para garantir as contas do mês!`;
+    } else if (S > 0 && !salaryGoalMet) {
+      statusColor = "bg-amber-500";
+      statusMessage = `Contas cobertas. Faltam ${formatCurrency(remainingToMonthlyGoal, true)} para o salário.`;
+    } else if (S > 0 && salaryGoalMet) {
+      statusMessage = "✅ Contas do mês garantidas com o lucro atual. Meta do mês atingida!";
     }
 
-    const pendingBillsTotal = bills.filter(b => !b.isPaid).reduce((acc, b) => acc + b.amount, 0);
+    const pendingBillsTotalAll = bills.filter(b => !b.isPaid).reduce((acc, b) => acc + b.amount, 0);
     const remainingPlannedDates = plannedWorkDates.filter(d => d.startsWith(currentMonthPrefix) && d >= todayStr).sort();
     const remainingDays = remainingPlannedDates.length;
 
     return { 
-        totalIncome, totalExpense, netProfit, profitMargin, 
+        totalIncome: totalIncomeFinance,
+        totalExpense: totalExpenseFinance,
+        netProfit: netProfitFinance,
+        profitMargin,
         displayGoal, D, F, S, statusColor, statusMessage,
-        dailyGoal, expenseTargetToday, salaryTargetToday, F_today, dailyStatusColor, dailyStatusMessage,
-        remainingForToday, isGoalMet,
-        pendingBillsTotal, remainingDays
+        minimumForBills: minimumForBillsDashboard,
+        cashForBills: cashForBillsDashboard,
+        minimumForBillsShift,
+        minimumForBillsShiftFrozen,
+        accountsRemainingWithShift: displayRemainingAccounts,
+        cashForBillsShift,
+        openingBalanceForMonth, monthlyNetProfit, pendingBillsTotalMonth, remainingToMonthlyGoal,
+        dailyGoal: displayDailyGoal, expenseTargetToday: displayExpenseTarget, salaryTargetToday: displaySalaryTarget, F_today: displayFToday, dailyStatusColor, dailyStatusMessage,
+        remainingAccountsToday: displayRemainingAccounts, remainingSalaryToday: displayRemainingSalary,
+        remainingForToday: displayRemainingForToday, isGoalMet: displayIsGoalMet,
+        pendingBillsTotalAll, remainingDays,
+        totalExpensesThisMonth: totalExpenseFinance,
+        cashOnHand,
     };
-  }, [transactions, bills, plannedWorkDates, monthlySalaryGoal, shiftState]);
+  }, [transactions, bills, plannedWorkDates, monthlySalaryGoal, shiftState, openingBalances, isShiftModalOpen]);
 
   // ... (Other useMemos: billsSummary, filteredHistory, historySummary, pieData - Unchanged)
   const billsSummary = useMemo(() => ({
     paid: bills.filter(b => b.isPaid).reduce((acc, b) => acc + b.amount, 0),
     pending: bills.filter(b => !b.isPaid).reduce((acc, b) => acc + b.amount, 0)
   }), [bills]);
+
+  const upcomingBills = useMemo(() => (
+    bills
+      .filter(b => !b.isPaid)
+      .slice()
+      .sort((a, b) => a.dueDate.localeCompare(b.dueDate))
+      .slice(0, 3)
+  ), [bills]);
 
   const filteredHistory = useMemo(() => {
     const today = new Date();
@@ -543,10 +836,10 @@ function App() {
 
   const currentShiftTotal = shiftState.earnings.uber + shiftState.earnings.n99 + shiftState.earnings.indrive + shiftState.earnings.private;
   const currentShiftLiquid = currentShiftTotal - shiftState.expenses;
-  const currentShiftMinutes = Math.floor(shiftState.elapsedSeconds / 60);
+  const currentShiftMinutes = displayedMinutes;
   const currentShiftRph = (currentShiftMinutes > 0) ? currentShiftTotal / (currentShiftMinutes / 60) : 0;
   const currentShiftRpk = shiftState.km > 0 ? currentShiftTotal / shiftState.km : 0;
-  const currentShiftHoursPrecise = shiftState.elapsedSeconds / 3600;
+  const currentShiftHoursPrecise = displayedMinutes / 60;
 
   const pieData = useMemo(() => [
     { name: 'Ganhos', value: stats.totalIncome, color: '#3b82f6' },
@@ -560,11 +853,14 @@ function App() {
   };
 
   const handleSaveShift = (data: { amount: number; description: string; date: string; mileage: number; durationHours: number }) => {
+    const shiftStartMs = shiftState.startTimeMs ?? shiftState.startTime ?? Date.now();
+    const shiftDate = new Date(shiftStartMs).toISOString().split('T')[0];
     const incomeTransaction: Transaction = {
       id: Math.random().toString(36).substr(2, 9),
       type: TransactionType.INCOME,
       category: undefined,
-      ...data
+      ...data,
+      date: shiftDate,
     };
     const expenseTransactions: Transaction[] = shiftState.expenseList.map(exp => ({
       id: Math.random().toString(36).substr(2, 9),
@@ -572,12 +868,12 @@ function App() {
       amount: exp.amount,
       description: `${exp.description} (Turno)`,
       category: exp.category, 
-      date: data.date
+      date: shiftDate,
     }));
     
     const newTransactions = [incomeTransaction, ...expenseTransactions, ...transactions];
     setTransactions(newTransactions);
-    const resetShiftState = { isActive: false, isPaused: false, startTime: null, elapsedSeconds: 0, earnings: { uber: 0, n99: 0, indrive: 0, private: 0 }, expenses: 0, expenseList: [], km: 0 };
+    const resetShiftState = { isActive: false, isPaused: false, startTime: null, startTimeMs: null, pausedAtMs: null, totalPausedMs: 0, elapsedSeconds: 0, earnings: { uber: 0, n99: 0, indrive: 0, private: 0 }, expenses: 0, expenseList: [], km: 0 };
     setShiftState(resetShiftState);
   };
 
@@ -595,6 +891,22 @@ function App() {
   const toggleBillPaid = (id: string) => { setBills(prev => prev.map(b => (b.id === id ? { ...b, isPaid: !b.isPaid } : b))); };
   const handleDeleteBill = (id: string) => { setBills(prev => prev.filter(b => b.id !== id)); };
   const handleDeleteTransaction = (id: string) => { setTransactions(prev => prev.filter(t => t.id !== id)); };
+
+  const handleOpeningBalanceChange = (monthKey: string, value: number) => {
+    const safeValue = Number.isFinite(value) ? Math.max(0, value) : 0;
+    setOpeningBalances(prev => ({ ...prev, [monthKey]: safeValue }));
+  };
+
+  const handleOpeningBalanceInputChange = (value: string) => {
+    const masked = formatCurrencyInputMask(value);
+    setOpeningBalanceInput(masked);
+  };
+
+  const persistOpeningBalance = () => {
+    const numeric = parseCurrencyInputToNumber(openingBalanceInput);
+    setOpeningBalanceInput(formatCurrencyPtBr(numeric));
+    handleOpeningBalanceChange(currentMonthKey, numeric);
+  };
 
   if (authLoading) return <div className="min-h-screen bg-slate-900 flex items-center justify-center text-white">Carregando FinanDrive...</div>;
 
@@ -692,7 +1004,7 @@ function App() {
                <div className="absolute top-0 right-0 p-3 opacity-10 group-hover:opacity-20 transition-opacity"><Target size={64} /></div>
                <div className="relative z-10">
                  {/* Top Row: References */}
-                 <div className="flex justify-between text-[10px] opacity-80 font-bold uppercase tracking-wider mb-1">
+                 <div className="flex justify-between text-xs opacity-90 font-bold uppercase tracking-wider mb-1">
                     <span>Meta Total: {formatCurrency(stats.dailyGoal)}</span>
                     <span>Faturado: {formatCurrency(stats.F_today)}</span>
                  </div>
@@ -703,11 +1015,22 @@ function App() {
                         {stats.isGoalMet ? 'Meta batida! Excedente:' : 'Falta para a meta:'}
                     </p>
                     <h3 className="text-4xl font-extrabold tracking-tight">
-                        {stats.isGoalMet 
-                            ? `+ ${formatCurrency(stats.F_today - stats.dailyGoal, true)}` 
+                        {stats.isGoalMet
+                            ? `+ ${formatCurrency(stats.F_today - stats.dailyGoal, true)}`
                             : formatCurrency(stats.remainingForToday, true)
                         }
                     </h3>
+                 </div>
+
+                 <div className="grid grid-cols-2 gap-2 mt-1 text-sm font-semibold">
+                    <div className="bg-white/10 rounded-lg px-2 py-1 flex justify-between items-center">
+                       <span className="opacity-80">Falta p/ meta salário</span>
+                       <span>{formatCurrency(stats.remainingSalaryToday, true)}</span>
+                    </div>
+                    <div className="bg-white/10 rounded-lg px-2 py-1 flex justify-between items-center">
+                       <span className="opacity-80">Falta p/ meta contas</span>
+                       <span>{formatCurrency(stats.accountsRemainingWithShift, true)}</span>
+                    </div>
                  </div>
                  
                  <div className="w-full h-1.5 bg-black/20 rounded-full overflow-hidden mb-2 mt-1">
@@ -715,19 +1038,19 @@ function App() {
                  </div>
 
                  <div className="bg-black/10 p-2 rounded-lg space-y-1">
-                    <div className="flex justify-between text-[10px] font-medium">
+                    <div className="flex justify-between text-xs font-medium">
                        <span className="opacity-80">Mínimo p/ contas:</span>
                        <span>{formatCurrency(stats.expenseTargetToday)}</span>
                     </div>
                     {stats.S > 0 && (
-                      <div className="flex justify-between text-[10px] font-medium">
+                      <div className="flex justify-between text-xs font-medium">
                          <span className="opacity-80">Salário alvo:</span>
                          <span>{formatCurrency(stats.salaryTargetToday)}</span>
                       </div>
                     )}
                  </div>
                  
-                 <p className="text-[10px] text-white/90 mt-2 font-medium flex items-center gap-1 justify-center">
+                 <p className="text-xs text-white/90 mt-2 font-medium flex items-center gap-1 justify-center">
                    {stats.F_today < stats.expenseTargetToday && <AlertTriangle size={10} />}
                    {stats.dailyStatusMessage}
                  </p>
@@ -739,8 +1062,7 @@ function App() {
               <div className="bg-slate-900/80 rounded-xl p-1 border border-slate-800 shadow-lg flex flex-col justify-center items-center relative group h-16">
                 <div className="text-slate-500 text-[9px] font-bold uppercase tracking-wider mb-0.5 flex items-center gap-1"><Clock size={9} /> Tempo</div>
                 <div className="text-xl font-mono font-bold text-white tracking-tighter">
-                  {formatTime(shiftState.elapsedSeconds).split(' ')[0]}
-                  <span className="text-xs text-slate-500 ml-0.5">{formatTime(shiftState.elapsedSeconds).split(' ').slice(1).join(' ')}</span>
+                  {formatTime(displayedMinutes)}
                 </div>
                 {shiftState.isActive && <button onClick={handleEditStartTime} className="absolute top-1 right-1 p-1 text-white bg-indigo-600 hover:bg-indigo-500 rounded-lg shadow-md transition-colors z-20 border border-white/20"><Edit2 size={10} /></button>}
               </div>
@@ -756,7 +1078,17 @@ function App() {
               <button onClick={() => handleOpenEntry('99')} disabled={!shiftState.isActive || shiftState.isPaused} className="bg-yellow-400 hover:bg-yellow-300 border border-yellow-500 rounded-xl px-2 h-12 flex items-center justify-between transition-all active:scale-95 disabled:opacity-40"><div className="flex items-center gap-1"><div className="bg-black/10 px-1.5 py-0.5 rounded text-black font-bold text-[9px]">99</div><div className="text-black/60 text-[9px] uppercase font-bold">99</div></div><div className="text-black font-bold text-sm">{formatCurrency(shiftState.earnings.n99)}</div></button>
               <button onClick={() => handleOpenEntry('indrive')} disabled={!shiftState.isActive || shiftState.isPaused} className="bg-green-600 hover:bg-green-500 border border-green-500 rounded-xl px-2 h-12 flex items-center justify-between transition-all active:scale-95 disabled:opacity-40"><div className="flex items-center gap-1"><div className="bg-white/20 px-1.5 py-0.5 rounded text-white font-bold text-[9px]">In</div><div className="text-green-100 text-[9px] uppercase font-bold">InDr</div></div><div className="text-white font-bold text-sm">{formatCurrency(shiftState.earnings.indrive)}</div></button>
               <button onClick={() => handleOpenEntry('private')} disabled={!shiftState.isActive || shiftState.isPaused} className="bg-slate-700 hover:bg-slate-600 border border-slate-600 rounded-xl px-2 h-12 flex items-center justify-between transition-all active:scale-95 disabled:opacity-40"><div className="flex items-center gap-1"><div className="bg-white/10 p-1 rounded text-white"><Wallet size={10} /></div><div className="text-slate-300 text-[9px] uppercase font-bold">Part.</div></div><div className="text-white font-bold text-sm">{formatCurrency(shiftState.earnings.private)}</div></button>
-              <button onClick={() => handleOpenEntry('km')} disabled={!shiftState.isActive || shiftState.isPaused} className="bg-blue-600 hover:bg-blue-500 border border-blue-500 rounded-xl px-2 h-12 flex items-center justify-between transition-all active:scale-95 disabled:opacity-40"><div className="flex items-center gap-1"><div className="bg-white/20 p-1 rounded text-white"><Gauge size={10} /></div><div className="text-blue-100 text-[9px] uppercase font-bold">KM</div></div><div className="text-white font-bold text-sm">{shiftState.km.toFixed(1)}</div></button>
+              <button onClick={() => handleOpenEntry('km')} disabled={!shiftState.isActive || shiftState.isPaused} className="bg-blue-600 hover:bg-blue-500 border border-blue-500 rounded-xl px-2 h-12 flex items-center justify-between transition-all active:scale-95 disabled:opacity-40 relative">
+                <div className="flex items-center gap-1"><div className="bg-white/20 p-1 rounded text-white"><Gauge size={10} /></div><div className="text-blue-100 text-[9px] uppercase font-bold">KM</div></div><div className="text-white font-bold text-sm">{shiftState.km.toFixed(1)}</div>
+                <div
+                  className="absolute -top-1 -right-1 bg-white/80 text-blue-700 rounded-full p-1 shadow border border-blue-200"
+                  onClick={(e) => { e.stopPropagation(); handleManualKmAdjust(); }}
+                  role="button"
+                  tabIndex={0}
+                >
+                  <Edit2 size={12} />
+                </div>
+              </button>
               <button onClick={() => handleOpenEntry('expense')} disabled={!shiftState.isActive || shiftState.isPaused} className="bg-rose-600 hover:bg-rose-500 border border-rose-500 rounded-xl px-2 h-12 flex items-center justify-between transition-all active:scale-95 disabled:opacity-40"><div className="flex items-center gap-1"><div className="bg-white/20 p-1 rounded text-white"><Fuel size={10} /></div><div className="text-rose-100 text-[9px] uppercase font-bold">Gasto</div></div><div className="text-white font-bold text-sm">{formatCurrency(shiftState.expenses)}</div></button>
             </div>
 
@@ -790,7 +1122,7 @@ function App() {
                 <div>
                   <h1 className="text-2xl font-bold text-slate-800">{activeTab === 'dashboard' ? 'Painel de Controle' : activeTab === 'reports' ? 'Relatórios de Ganhos' : activeTab === 'bills' ? 'Contas & Planejamento' : 'Histórico Completo'}</h1>
                   <p className="text-slate-500 text-sm flex items-center gap-1">
-                    {activeTab === 'dashboard' && stats.pendingBillsTotal > 0 ? <span className="text-rose-500 font-medium">Você tem {formatCurrency(stats.pendingBillsTotal)} em contas pendentes.</span> : <span>Gestão profissional para motoristas.</span>}
+                    {activeTab === 'dashboard' && stats.pendingBillsTotalAll > 0 ? <span className="text-rose-500 font-medium">Você tem {formatCurrency(stats.pendingBillsTotalAll)} em contas pendentes.</span> : <span>Gestão profissional para motoristas.</span>}
                   </p>
                 </div>
                 <button onClick={() => setShowValues(!showValues)} className="hidden md:flex p-2 text-slate-400 hover:text-indigo-600 bg-white hover:bg-slate-50 rounded-lg border border-slate-200 transition-colors" title={showValues ? 'Ocultar Valores' : 'Mostrar Valores'}>{showValues ? <Eye size={20} /> : <EyeOff size={20} />}</button>
@@ -812,7 +1144,11 @@ function App() {
                       <div className="flex justify-between items-start">
                         <div>
                           <p className="text-white/80 text-sm font-medium mb-1 flex items-center gap-1"><Target size={14} /> Meta Mensal (Real)</p>
-                          <h3 className="text-3xl font-bold mb-1">{formatCurrency(stats.displayGoal)}</h3>
+                          <h3 className="text-3xl font-bold leading-tight">{formatCurrency(stats.remainingToMonthlyGoal)}</h3>
+                          <p className="text-white/80 text-xs font-semibold">
+                            {stats.remainingToMonthlyGoal > 0 ? 'Faltam para bater a meta' : 'Meta do mês atingida!'}
+                          </p>
+                          <p className="text-white/60 text-[11px] font-medium mt-1">Meta do mês: {formatCurrency(stats.S)}</p>
                         </div>
                         <button onClick={() => setIsSettingsModalOpen(true)} className="p-2 bg-white/10 hover:bg-white/20 rounded-lg text-white transition-colors z-20 backdrop-blur-sm" title="Configurar Metas e Categorias"><Settings size={20} /></button>
                       </div>
@@ -821,7 +1157,7 @@ function App() {
                       <div className="mt-3 space-y-1 bg-black/10 p-2 rounded-lg">
                          <div className="flex justify-between text-xs font-medium">
                             <span className="opacity-80 flex items-center gap-1"><AlertCircle size={10} /> Mínimo p/ Contas (mês):</span>
-                            <span>{formatCurrency(stats.D)}</span>
+                            <span>{formatCurrency(stats.minimumForBills)}</span>
                          </div>
                          {stats.S > 0 && (
                            <div className="flex justify-between text-xs font-medium">
@@ -837,13 +1173,24 @@ function App() {
                       </div>
 
                       <p className="text-xs text-white/90 mt-2 leading-tight flex items-center gap-1">
-                         {stats.F < stats.D && <AlertTriangle size={12} className="text-white" />}
+                         {stats.minimumForBills > 0 && <AlertTriangle size={12} className="text-white" />}
                          {stats.statusMessage}
                       </p>
                     </div>
                   </div>
 
-                  <StatCard title="Lucro Líquido" value={formatCurrency(stats.netProfit)} icon={Wallet} colorClass="bg-slate-800" trend={`${stats.profitMargin.toFixed(0)}% Margem`} trendUp={stats.profitMargin > 30} />
+                  <StatCard
+                    title="Lucro Líquido"
+                    value={formatCurrency(stats.netProfit)}
+                    icon={Wallet}
+                    colorClass="bg-slate-800"
+                    trend={`${stats.profitMargin.toFixed(0)}% Margem`}
+                    trendUp={stats.profitMargin > 30}
+                    extraInfoLines={[
+                      `Despesas do mês: ${formatCurrency(stats.totalExpensesThisMonth)}`,
+                      `Caixa atual: ${formatCurrency(stats.cashOnHand)}`,
+                    ]}
+                  />
                 </div>
                 
                 {/* Progress Bar for Salary Goal */}
@@ -889,13 +1236,13 @@ function App() {
                     <div className="bg-white p-6 rounded-2xl shadow-sm border border-slate-200">
                       <div className="flex justify-between items-center mb-4"><h3 className="font-bold text-slate-800 text-sm">Próximos Pagamentos</h3><button onClick={() => setActiveTab('bills')} className="text-indigo-600 text-xs hover:underline">Ver tudo</button></div>
                       <div className="space-y-3">
-                        {bills.filter(b => !b.isPaid).slice(0, 3).map(bill => (
+                        {upcomingBills.map(bill => (
                           <div key={bill.id} className="flex justify-between items-center p-3 bg-slate-50 rounded-lg border border-slate-100">
                             <div><p className="text-sm font-semibold text-slate-700">{bill.description}</p><p className="text-xs text-rose-500 font-medium">Vence: {formatDateBr(bill.dueDate)}</p></div>
                             <span className="text-sm font-bold text-slate-800">{formatCurrency(bill.amount)}</span>
                           </div>
                         ))}
-                        {bills.filter(b => !b.isPaid).length === 0 && <p className="text-center text-xs text-slate-400 py-4">Tudo pago! 🎉</p>}
+                        {upcomingBills.length === 0 && <p className="text-center text-xs text-slate-400 py-4">Tudo pago! 🎉</p>}
                       </div>
                     </div>
                   </div>
@@ -904,7 +1251,13 @@ function App() {
             )}
 
             {/* Reports Content */}
-            {activeTab === 'reports' && <ReportsTab transactions={transactions} showValues={showValues} />}
+            {activeTab === 'reports' && (
+              <ReportsTab
+                transactions={transactions}
+                bills={bills}
+                showValues={showValues}
+              />
+            )}
 
             {/* Bills Content */}
             {activeTab === 'bills' && (
@@ -1017,19 +1370,24 @@ function App() {
         categories={categories} 
       />
       <BillModal isOpen={isBillModalOpen} onClose={() => { setIsBillModalOpen(false); setEditingBill(null); }} onSave={handleSaveBill} initialData={editingBill} categories={categories} />
-      <SettingsModal 
-        isOpen={isSettingsModalOpen} 
-        onClose={() => setIsSettingsModalOpen(false)} 
-        workDays={workDays} 
-        onSaveWorkDays={setWorkDays} 
+      <SettingsModal
+        isOpen={isSettingsModalOpen}
+        onClose={() => setIsSettingsModalOpen(false)}
+        workDays={workDays}
+        onSaveWorkDays={setWorkDays}
         plannedWorkDates={plannedWorkDates}
         onSavePlannedDates={setPlannedWorkDates}
         monthlySalaryGoal={monthlySalaryGoal}
         onSaveSalaryGoal={setMonthlySalaryGoal}
-        categories={categories} 
-        onAddCategory={handleAddCategory} 
-        onEditCategory={handleEditCategory} 
-        onDeleteCategory={handleDeleteCategory} 
+        currentMonthKey={currentMonthKey}
+        openingBalanceInput={openingBalanceInput}
+        openingBalanceValue={openingBalances[currentMonthKey] || 0}
+        onChangeOpeningBalance={handleOpeningBalanceInputChange}
+        onBlurOpeningBalance={persistOpeningBalance}
+        categories={categories}
+        onAddCategory={handleAddCategory}
+        onEditCategory={handleEditCategory}
+        onDeleteCategory={handleDeleteCategory}
       />
     </div>
   );
