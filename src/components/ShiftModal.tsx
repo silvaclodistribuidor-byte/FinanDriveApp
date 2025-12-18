@@ -1,6 +1,14 @@
 import React, { useState, useEffect } from 'react';
 import { X, Check, Gauge, Clock, DollarSign } from 'lucide-react';
 
+const formatLocalDateYYYYMMDD = (date: Date) => {
+  return [
+    date.getFullYear(),
+    String(date.getMonth() + 1).padStart(2, '0'),
+    String(date.getDate()).padStart(2, '0'),
+  ].join('-');
+};
+
 // IMPORTANT: Use local calendar date (not UTC) to avoid saving shifts after ~21:00–22:00
 // as the next day in Brazil (UTC-3) when using toISOString().
 const getLocalISODate = (d: Date = new Date()) => {
