@@ -1,4 +1,4 @@
-import React, { useState, useMemo, useEffect, useRef } from "react";
+import React, { useState, useMemo, useEffect, useRef, Suspense } from "react";
 import { 
   LayoutDashboard, 
   Wallet, 
@@ -34,7 +34,6 @@ import {
   Tags,
   Check
 } from 'lucide-react';
-import { PieChart, Pie, Cell, Tooltip, ResponsiveContainer, Legend } from 'recharts';
 import { onAuthStateChanged } from 'firebase/auth';
 import { StatCard } from './components/StatCard';
 import { TransactionModal } from './components/TransactionModal';
@@ -42,7 +41,6 @@ import { ShiftModal } from './components/ShiftModal';
 import { ShiftEntryModal } from './components/ShiftEntryModal';
 import { BillModal } from './components/BillModal';
 import { SettingsModal } from './components/SettingsModal';
-import { ReportsTab } from './components/ReportsTab';
 import { Login } from './components/Login';
 import { computeMinimumForBills } from './utils/bills';
 import { formatCurrencyInputMask, parseCurrencyInputToNumber, formatCurrencyPtBr } from './utils/currency';
@@ -54,6 +52,14 @@ import {
   createDriverDocIfMissing,
 } from "./services/firestoreService";
 import { Transaction, TransactionType, ExpenseCategory, Bill, ShiftState, DEFAULT_CATEGORIES, Category } from './types';
+
+// ⚡ Performance: charts/relatórios são carregados sob demanda (code-splitting)
+const ReportsTab = React.lazy(() =>
+  import('./components/ReportsTab').then((m) => ({ default: m.ReportsTab }))
+);
+const DashboardPieChart = React.lazy(() =>
+  import('./components/DashboardPieChart').then((m) => ({ default: m.DashboardPieChart }))
+);
 
 // Usuário usado internamente no app (derivado do Firebase Auth)
 export interface User {
@@ -84,27 +90,7 @@ const formatDateBr = (dateStr: string) => {
   return date.toLocaleDateString('pt-BR');
 };
 
-const RADIAN = Math.PI / 180;
-const renderCustomizedLabel = ({ cx, cy, midAngle, innerRadius, outerRadius, percent }: any) => {
-  const radius = innerRadius + (outerRadius - innerRadius) * 0.5;
-  const x = cx + radius * Math.cos(-midAngle * RADIAN);
-  const y = cy + radius * Math.sin(-midAngle * RADIAN);
 
-  if (percent < 0.05) return null;
-
-  return (
-    <text
-      x={x}
-      y={y}
-      fill="white"
-      textAnchor="middle"
-      dominantBaseline="central"
-      className="text-xs font-bold"
-    >
-      {`${(percent * 100).toFixed(0)}%`}
-    </text>
-  );
-};
 
 const INITIAL_TRANSACTIONS: Transaction[] = [];
 const INITIAL_BILLS: Bill[] = [];
@@ -153,7 +139,7 @@ function App() {
   // UI State
   const [isLoadingData, setIsLoadingData] = useState(false);
   const [showValues, setShowValues] = useState(true);
-  const [activeTab, setActiveTab] = useState<'dashboard' | 'bills' | 'history' | 'shift' | 'reports'>('dashboard');
+  const [activeTab, setActiveTab] = useState<'dashboard' | 'bills' | 'history' | 'shift' | 'reports'>('shift');
   
   // Modals
   const [isTransModalOpen, setIsTransModalOpen] = useState(false);
@@ -494,7 +480,30 @@ function App() {
       window.removeEventListener('focus', reconcile);
       document.removeEventListener('visibilitychange', onVisibilityChange);
     };
-  }, [shiftState.isActive, shiftState.isPaused]);
+
+    console.log('[app] auto-save triggered', {
+      userId: user.uid,
+      summary: {
+        transactions: payload.transactions.length,
+        bills: payload.bills.length,
+        categories: payload.categories.length,
+        hasShiftState: Boolean(payload.shiftState),
+      },
+      guards: {
+        hasLoadedData,
+        isLoadingData,
+        hasPendingChanges,
+        isHydrating: isHydratingRef.current,
+        hydrationComplete: hydrationCompleteRef.current,
+      },
+    });
+
+    saveAppData(payload, user.uid)
+      .then(() => setHasPendingChanges(false))
+      .catch((error) => {
+        console.error("Erro ao salvar dados no Firestore:", error);
+      });
+    }, [user, transactions, bills, categories, shiftState, isLoadingData, workDays, plannedWorkDates, monthlySalaryGoal, openingBalances, hasLoadedData, hasPendingChanges]);
 
 
   // Initial Check: Populate planned dates if empty
@@ -525,6 +534,7 @@ function App() {
   // --- Handlers ---
 
   const handleLogout = async () => {
+    clearShiftStateLocal(user?.uid);
     await logoutUser();
     setHasLoadedData(false);
     setHasPendingChanges(false);
@@ -572,7 +582,7 @@ function App() {
       if (entryCategory === 'uber') newState.earnings.uber = value;
       else if (entryCategory === '99') newState.earnings.n99 = value;
       else if (entryCategory === 'indrive') newState.earnings.indrive = value;
-      else if (entryCategory === 'private') newState.earnings.private = value;
+      else if (entryCategory === 'private') newState.earnings.private += value;
       else if (entryCategory === 'km') newState.km += value;
       else if (entryCategory === 'expense') {
         newState.expenses += value;
@@ -672,9 +682,9 @@ function App() {
     }
   };
 
-  const formatTime = (seconds: number) => {
-    const h = Math.floor(seconds / 3600);
-    const m = Math.floor((seconds % 3600) / 60);
+  const formatTime = (minutes: number) => {
+    const h = Math.floor(minutes / 60);
+    const m = minutes % 60;
     return `${h}h ${m.toString().padStart(2, '0')}m`;
   };
 
@@ -823,10 +833,45 @@ function App() {
 
     let remainingForToday = Math.max(0, dailyGoal - F_today);
     let isGoalMet = F_today >= dailyGoal;
+
+    const nextWorkday = plannedWorkDates
+      .filter((d) => d > todayStr)
+      .sort()[0] || todayStr;
+
+    const showNextDayTargets = isGoalMet && !shiftState.isActive && !shiftState.isPaused;
+
+    let displayFToday = F_today;
+    let displayExpenseTarget = expenseTargetToday;
+    let displaySalaryTarget = salaryTargetToday;
+    let displayDailyGoal = dailyGoal;
+    let displayRemainingAccounts = remainingAccountsToday;
+    let displayRemainingSalary = remainingSalaryToday;
+    let displayRemainingForToday = remainingForToday;
+    let displayIsGoalMet = isGoalMet;
+
+    if (showNextDayTargets) {
+      const daysRemainingExpensesNext = Math.max(1, countWorkDays(nextWorkday, lastExpenseDate));
+      const daysRemainingSalaryNext = Math.max(1, countWorkDays(nextWorkday, endOfMonthStr));
+
+      const expenseTargetNext = minimumForBillsShiftFrozen > 0 ? minimumForBillsShiftFrozen / daysRemainingExpensesNext : 0;
+      const salaryTargetNext = S > 0 ? salaryRemainingStart / daysRemainingSalaryNext : 0;
+      const dailyGoalNext = S > 0 ? Math.max(expenseTargetNext, salaryTargetNext) : expenseTargetNext;
+
+      displayFToday = 0;
+      displayExpenseTarget = expenseTargetNext;
+      displaySalaryTarget = salaryTargetNext;
+      displayDailyGoal = dailyGoalNext;
+      displayRemainingAccounts = Math.max(0, expenseTargetNext);
+      displayRemainingSalary = Math.max(0, salaryTargetNext);
+      displayRemainingForToday = dailyGoalNext;
+      displayIsGoalMet = false;
+    }
     
     // Status Color
     let dailyStatusColor = "bg-emerald-600";
-    let dailyStatusMessage = "Parabéns! Você bateu a meta de hoje.";
+    let dailyStatusMessage = showNextDayTargets
+      ? "Metas de hoje batidas. Veja a meta do próximo dia."
+      : "Parabéns! Você bateu a meta de hoje.";
 
     if (!isGoalMet) {
       if (minimumForBillsShift > 0 && F_today < expenseTargetToday) {
@@ -839,7 +884,7 @@ function App() {
         dailyStatusColor = "bg-amber-500";
         dailyStatusMessage = "Continue avançando na meta do dia.";
       }
-    } else {
+    } else if (displayIsGoalMet) {
         dailyStatusColor = "bg-emerald-600";
         const surplus = F_today - dailyGoal;
         dailyStatusMessage = surplus > 0
@@ -945,10 +990,10 @@ function App() {
 
   const currentShiftTotal = shiftState.earnings.uber + shiftState.earnings.n99 + shiftState.earnings.indrive + shiftState.earnings.private;
   const currentShiftLiquid = currentShiftTotal - shiftState.expenses;
-  const currentShiftMinutes = Math.floor(shiftState.elapsedSeconds / 60);
+  const currentShiftMinutes = displayedMinutes;
   const currentShiftRph = (currentShiftMinutes > 0) ? currentShiftTotal / (currentShiftMinutes / 60) : 0;
   const currentShiftRpk = shiftState.km > 0 ? currentShiftTotal / shiftState.km : 0;
-  const currentShiftHoursPrecise = shiftState.elapsedSeconds / 3600;
+  const currentShiftHoursPrecise = displayedMinutes / 60;
 
   const pieData = useMemo(() => [
     { name: 'Ganhos', value: stats.totalIncome, color: '#3b82f6' },
@@ -979,7 +1024,7 @@ function App() {
     
     const newTransactions = [incomeTransaction, ...expenseTransactions, ...transactions];
     setTransactions(newTransactions);
-    const resetShiftState = { isActive: false, isPaused: false, startTime: null, elapsedSeconds: 0, earnings: { uber: 0, n99: 0, indrive: 0, private: 0 }, expenses: 0, expenseList: [], km: 0 };
+    const resetShiftState = { isActive: false, isPaused: false, startTime: null, startTimeMs: null, pausedAtMs: null, totalPausedMs: 0, elapsedSeconds: 0, earnings: { uber: 0, n99: 0, indrive: 0, private: 0 }, expenses: 0, expenseList: [], km: 0 };
     setShiftState(resetShiftState);
     shiftStartRef.current = null;
     elapsedBaseRef.current = 0;
@@ -1112,7 +1157,7 @@ function App() {
                <div className="absolute top-0 right-0 p-3 opacity-10 group-hover:opacity-20 transition-opacity"><Target size={64} /></div>
                <div className="relative z-10">
                  {/* Top Row: References */}
-                 <div className="flex justify-between text-[10px] opacity-80 font-bold uppercase tracking-wider mb-1">
+                 <div className="flex justify-between text-xs opacity-90 font-bold uppercase tracking-wider mb-1">
                     <span>Meta Total: {formatCurrency(stats.dailyGoal)}</span>
                     <span>Faturado: {formatCurrency(stats.F_today)}</span>
                  </div>
@@ -1146,19 +1191,19 @@ function App() {
                  </div>
 
                  <div className="bg-black/10 p-2 rounded-lg space-y-1">
-                    <div className="flex justify-between text-[10px] font-medium">
+                    <div className="flex justify-between text-xs font-medium">
                        <span className="opacity-80">Mínimo p/ contas:</span>
                        <span>{formatCurrency(stats.expenseTargetToday)}</span>
                     </div>
                     {stats.S > 0 && (
-                      <div className="flex justify-between text-[10px] font-medium">
+                      <div className="flex justify-between text-xs font-medium">
                          <span className="opacity-80">Salário alvo:</span>
                          <span>{formatCurrency(stats.salaryTargetToday)}</span>
                       </div>
                     )}
                  </div>
                  
-                 <p className="text-[10px] text-white/90 mt-2 font-medium flex items-center gap-1 justify-center">
+                 <p className="text-xs text-white/90 mt-2 font-medium flex items-center gap-1 justify-center">
                    {stats.F_today < stats.expenseTargetToday && <AlertTriangle size={10} />}
                    {stats.dailyStatusMessage}
                  </p>
@@ -1170,8 +1215,7 @@ function App() {
               <div className="bg-slate-900/80 rounded-xl p-1 border border-slate-800 shadow-lg flex flex-col justify-center items-center relative group h-16">
                 <div className="text-slate-500 text-[9px] font-bold uppercase tracking-wider mb-0.5 flex items-center gap-1"><Clock size={9} /> Tempo</div>
                 <div className="text-xl font-mono font-bold text-white tracking-tighter">
-                  {formatTime(shiftState.elapsedSeconds).split(' ')[0]}
-                  <span className="text-xs text-slate-500 ml-0.5">{formatTime(shiftState.elapsedSeconds).split(' ').slice(1).join(' ')}</span>
+                  {formatTime(displayedMinutes)}
                 </div>
                 {shiftState.isActive && <button onClick={handleEditStartTime} className="absolute top-1 right-1 p-1 text-white bg-indigo-600 hover:bg-indigo-500 rounded-lg shadow-md transition-colors z-20 border border-white/20"><Edit2 size={10} /></button>}
               </div>
@@ -1329,17 +1373,9 @@ function App() {
                 <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
                   <div className="lg:col-span-2 bg-white p-6 rounded-2xl shadow-sm border border-slate-200">
                     <div className="flex justify-between items-center mb-6"><h3 className="font-bold text-slate-800">Ganhos vs Despesas</h3><div className="text-xs text-slate-500">Visão Geral</div></div>
-                    <div className="h-72 w-full flex items-center justify-center">
-                      <ResponsiveContainer width="100%" height="100%">
-                        <PieChart>
-                          <Pie data={pieData} cx="50%" cy="50%" labelLine={false} label={renderCustomizedLabel} outerRadius="80%" dataKey="value">
-                            {pieData.map((entry, index) => <Cell key={`cell-${index}`} fill={entry.color} />)}
-                          </Pie>
-                          <Legend layout="vertical" verticalAlign="middle" align="right" iconType="circle" />
-                          <Tooltip formatter={(value: number) => [showValues ? `R$ ${value.toFixed(2)}` : 'R$ ****', '']} contentStyle={{ borderRadius: '12px', border: 'none', boxShadow: '0 10px 15px -3px rgb(0 0 0 / 0.1)' }} />
-                        </PieChart>
-                      </ResponsiveContainer>
-                    </div>
+                    <Suspense fallback={<div className="h-72 w-full flex items-center justify-center" />}>
+                      <DashboardPieChart pieData={pieData} showValues={showValues} />
+                    </Suspense>
                   </div>
                   <div className="space-y-6">
                     <div className="bg-white p-6 rounded-2xl shadow-sm border border-slate-200">
