@@ -71,14 +71,12 @@ const getTodayString = () => {
   ].join('-');
 };
 
-const getLocalDateString = (d: Date) => {
-  return [
-    d.getFullYear(),
-    String(d.getMonth() + 1).padStart(2, ''0''),
-    String(d.getDate()).padStart(2, ''0'')
-  ].join(''-'');
+const getLocalISODate = (d: Date = new Date()) => {
+  const yyyy = d.getFullYear();
+  const mm = String(d.getMonth() + 1).padStart(2, '0');
+  const dd = String(d.getDate()).padStart(2, '0');
+  return `${yyyy}-${mm}-${dd}`;
 };
-
 
 const parseDateFromInput = (dateStr: string) => {
   if (!dateStr) return new Date();
