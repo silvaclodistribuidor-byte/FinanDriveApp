@@ -1100,9 +1100,18 @@ function App() {
             {/* STICKY FOOTER ACTIONS */}
             <div className="fixed bottom-0 left-0 right-0 p-3 bg-slate-950/80 backdrop-blur-md border-t border-slate-900 z-30 md:absolute md:bottom-0 md:bg-transparent md:border-none">
                 <div className="max-w-7xl mx-auto grid grid-cols-3 gap-2 mb-2">
-                    <div className="bg-slate-900/50 rounded-lg p-1 border border-slate-800 flex flex-col items-center justify-center"><div className="text-slate-400 text-[8px] font-medium uppercase tracking-wide">R$/H</div><div className="text-sm font-bold text-white">{formatCurrency(currentShiftRph)}</div></div>
-                    <div className="bg-slate-900/50 rounded-lg p-1 border border-slate-800 flex flex-col items-center justify-center"><div className="text-slate-400 text-[8px] font-medium uppercase tracking-wide">R$/KM</div><div className="text-sm font-bold text-white">{formatCurrency(currentShiftRpk)}</div></div>
-                    <div className="bg-slate-900/50 rounded-lg p-1 border border-slate-800 flex flex-col items-center justify-center"><div className="text-slate-400 text-[8px] font-medium uppercase tracking-wide">BRUTO</div><div className="text-sm font-bold text-blue-300">{formatCurrency(currentShiftTotal)}</div></div>
+                    <div className="bg-slate-800/80 rounded-lg p-2 border border-slate-700 shadow-md flex flex-col items-center justify-center">
+                      <div className="text-slate-300 text-[9px] font-semibold uppercase tracking-wide">R$/H</div>
+                      <div className="text-base font-bold text-white">{formatCurrency(currentShiftRph)}</div>
+                    </div>
+                    <div className="bg-slate-800/80 rounded-lg p-2 border border-slate-700 shadow-md flex flex-col items-center justify-center">
+                      <div className="text-slate-300 text-[9px] font-semibold uppercase tracking-wide">R$/KM</div>
+                      <div className="text-base font-bold text-white">{formatCurrency(currentShiftRpk)}</div>
+                    </div>
+                    <div className="bg-slate-800/80 rounded-lg p-2 border border-slate-700 shadow-md flex flex-col items-center justify-center">
+                      <div className="text-slate-300 text-[9px] font-semibold uppercase tracking-wide">BRUTO</div>
+                      <div className="text-base font-bold text-blue-200">{formatCurrency(currentShiftTotal)}</div>
+                    </div>
                 </div>
                 <div className="max-w-7xl mx-auto grid grid-cols-2 gap-3">
                 {!shiftState.isActive ? (
