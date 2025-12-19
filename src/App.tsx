@@ -264,7 +264,8 @@ function App() {
   // UI State
   const [isLoadingData, setIsLoadingData] = useState(false);
   const [showValues, setShowValues] = useState(true);
-  const [activeTab, setActiveTab] = useState<'dashboard' | 'bills' | 'history' | 'shift' | 'reports'>('dashboard');
+  // Abre direto na aba Turno por padrão (somente UI/UX; não altera regras de negócio).
+  const [activeTab, setActiveTab] = useState<'dashboard' | 'bills' | 'history' | 'shift' | 'reports'>('shift');
   
   // Modals
   const [isTransModalOpen, setIsTransModalOpen] = useState(false);
@@ -1324,8 +1325,7 @@ function App() {
               <div className="bg-slate-900/80 rounded-xl p-1 border border-slate-800 shadow-lg flex flex-col justify-center items-center relative group h-16">
                 <div className="text-slate-500 text-[9px] font-bold uppercase tracking-wider mb-0.5 flex items-center gap-1"><Clock size={9} /> Tempo</div>
                 <div className="text-xl font-mono font-bold text-white tracking-tighter">
-                  {formatTime(shiftState.elapsedSeconds).split(' ')[0]}
-                  <span className="text-xs text-slate-500 ml-0.5">{formatTime(shiftState.elapsedSeconds).split(' ').slice(1).join(' ')}</span>
+                  {formatTime(shiftState.elapsedSeconds)}
                 </div>
                 {shiftState.isActive && <button onClick={handleEditStartTime} className="absolute top-1 right-1 p-1 text-white bg-indigo-600 hover:bg-indigo-500 rounded-lg shadow-md transition-colors z-20 border border-white/20"><Edit2 size={10} /></button>}
               </div>
@@ -1358,9 +1358,18 @@ function App() {
             {/* STICKY FOOTER ACTIONS */}
             <div className="fixed bottom-0 left-0 right-0 p-3 bg-slate-950/80 backdrop-blur-md border-t border-slate-900 z-30 md:absolute md:bottom-0 md:bg-transparent md:border-none">
                 <div className="max-w-7xl mx-auto grid grid-cols-3 gap-2 mb-2">
-                    <div className="bg-slate-900/50 rounded-lg p-1 border border-slate-800 flex flex-col items-center justify-center"><div className="text-slate-400 text-[8px] font-medium uppercase tracking-wide">R$/H</div><div className="text-sm font-bold text-white">{formatCurrency(currentShiftRph)}</div></div>
-                    <div className="bg-slate-900/50 rounded-lg p-1 border border-slate-800 flex flex-col items-center justify-center"><div className="text-slate-400 text-[8px] font-medium uppercase tracking-wide">R$/KM</div><div className="text-sm font-bold text-white">{formatCurrency(currentShiftRpk)}</div></div>
-                    <div className="bg-slate-900/50 rounded-lg p-1 border border-slate-800 flex flex-col items-center justify-center"><div className="text-slate-400 text-[8px] font-medium uppercase tracking-wide">BRUTO</div><div className="text-sm font-bold text-blue-300">{formatCurrency(currentShiftTotal)}</div></div>
+                    <div className="bg-slate-900/70 rounded-xl p-2 border border-slate-800/80 ring-1 ring-white/10 shadow-lg shadow-slate-950/40 flex flex-col items-center justify-center">
+                      <div className="text-slate-300 text-[9px] font-bold uppercase tracking-wider">R$/H</div>
+                      <div className="text-base font-extrabold text-white">{formatCurrency(currentShiftRph)}</div>
+                    </div>
+                    <div className="bg-slate-900/70 rounded-xl p-2 border border-slate-800/80 ring-1 ring-white/10 shadow-lg shadow-slate-950/40 flex flex-col items-center justify-center">
+                      <div className="text-slate-300 text-[9px] font-bold uppercase tracking-wider">R$/KM</div>
+                      <div className="text-base font-extrabold text-white">{formatCurrency(currentShiftRpk)}</div>
+                    </div>
+                    <div className="bg-slate-900/80 rounded-xl p-2 border border-slate-800/80 ring-1 ring-blue-400/20 shadow-lg shadow-slate-950/40 flex flex-col items-center justify-center">
+                      <div className="text-slate-300 text-[9px] font-bold uppercase tracking-wider">BRUTO</div>
+                      <div className="text-base font-extrabold text-blue-200">{formatCurrency(currentShiftTotal)}</div>
+                    </div>
                 </div>
                 <div className="max-w-7xl mx-auto grid grid-cols-2 gap-3">
                 {!shiftState.isActive ? (
