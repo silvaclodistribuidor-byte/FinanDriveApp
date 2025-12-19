@@ -71,6 +71,57 @@ const getTodayString = () => {
   ].join('-');
 };
 
+
+// Data helpers
+// IMPORTANTE: use data local (não UTC) para evitar virar o dia errado (ex.: depois das 21–22h no Brasil).
+const getLocalISODate = (d: Date = new Date()) => {
+  const yyyy = d.getFullYear();
+  const mm = String(d.getMonth() + 1).padStart(2, '0');
+  const dd = String(d.getDate()).padStart(2, '0');
+  return `${yyyy}-${mm}-${dd}`;
+};
+
+// Converte diversos formatos (incluindo Firestore Timestamp) para epoch ms.
+const toEpochMs = (value: any): number | null => {
+  try {
+    if (value == null) return null;
+    if (typeof value === 'number' && Number.isFinite(value)) {
+      // Se vier em segundos (ex.: 1700000000), convertemos.
+      return value < 10_000_000_000 ? Math.floor(value * 1000) : Math.floor(value);
+    }
+    if (typeof value === 'string') {
+      const parsed = Date.parse(value);
+      return Number.isFinite(parsed) ? parsed : null;
+    }
+    if (value instanceof Date) {
+      const t = value.getTime();
+      return Number.isFinite(t) ? t : null;
+    }
+    if (typeof value === 'object') {
+      // Firestore Timestamp (várias formas)
+      if (typeof value.toMillis === 'function') {
+        const t = value.toMillis();
+        return typeof t === 'number' && Number.isFinite(t) ? t : null;
+      }
+      if (typeof value.toDate === 'function') {
+        const d = value.toDate();
+        if (d instanceof Date) {
+          const t = d.getTime();
+          return Number.isFinite(t) ? t : null;
+        }
+      }
+      if (typeof value.seconds === 'number' && Number.isFinite(value.seconds)) {
+        const ns = typeof value.nanoseconds === 'number' ? value.nanoseconds : 0;
+        return Math.floor(value.seconds * 1000 + ns / 1_000_000);
+      }
+    }
+    return null;
+  } catch {
+    return null;
+  }
+};
+
+
 const parseDateFromInput = (dateStr: string) => {
   if (!dateStr) return new Date();
   const [y, m, d] = dateStr.split('-').map(Number);
@@ -404,6 +455,7 @@ function App() {
         console.error("Erro ao salvar dados no Firestore:", error);
       });
     }, [user, transactions, bills, categories, shiftState, isLoadingData, workDays, plannedWorkDates, monthlySalaryGoal, openingBalances, hasLoadedData, hasPendingChanges]);
+
 
   // Initial Check: Populate planned dates if empty
   useEffect(() => {
@@ -867,15 +919,17 @@ function App() {
       ...data,
       date: shiftDate,
     };
-    const expenseTransactions: Transaction[] = shiftState.expenseList.map(exp => ({
+
+    const expenses = Array.isArray(safeShift.expenseList) ? safeShift.expenseList : [];
+    const expenseTransactions: Transaction[] = expenses.map((exp) => ({
       id: Math.random().toString(36).substr(2, 9),
       type: TransactionType.EXPENSE,
-      amount: exp.amount,
+      amount: Number(exp.amount) || 0,
       description: `${exp.description} (Turno)`,
       category: exp.category, 
       date: shiftDate,
     }));
-    
+
     const newTransactions = [incomeTransaction, ...expenseTransactions, ...transactions];
     setTransactions(newTransactions);
     const resetShiftState = { isActive: false, isPaused: false, startTime: null, startTimeMs: null, pausedAtMs: null, totalPausedMs: 0, elapsedSeconds: 0, earnings: { uber: 0, n99: 0, indrive: 0, private: 0 }, expenses: 0, expenseList: [], km: 0 };
