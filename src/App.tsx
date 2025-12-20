@@ -80,6 +80,14 @@ const getLocalISODate = (d: Date = new Date()) => {
   return `${yyyy}-${mm}-${dd}`;
 };
 
+// Soma dias em uma data (baseada em YYYY-MM-DD) usando calendário local.
+const addDaysToISODate = (iso: string, days: number) => {
+  const [y, m, d] = iso.split('-').map(Number);
+  const date = new Date(y, (m || 1) - 1, d || 1);
+  date.setDate(date.getDate() + days);
+  return getLocalISODate(date);
+};
+
 // Converte diversos formatos (incluindo Firestore Timestamp) para epoch ms.
 const toEpochMs = (value: any): number | null => {
   try {
@@ -682,7 +690,8 @@ function App() {
       if (entryCategory === 'uber') newState.earnings.uber = value;
       else if (entryCategory === '99') newState.earnings.n99 = value;
       else if (entryCategory === 'indrive') newState.earnings.indrive = value;
-      else if (entryCategory === 'private') newState.earnings.private = value;
+      // Particular deve SOMAR (entrada incremental), não substituir o valor atual.
+      else if (entryCategory === 'private') newState.earnings.private += value;
       else if (entryCategory === 'km') newState.km += value;
       else if (entryCategory === 'expense') {
         newState.expenses += value;
@@ -826,6 +835,70 @@ function App() {
   const stats = useMemo(() => {
     const todayStr = getTodayString();
     const currentMonthPrefix = todayStr.substring(0, 7); // YYYY-MM
+
+    // --- Referência do "dia" para a meta diária ---
+    // Regras:
+    // 1) Se o turno estiver ATIVO/PAUSADO, a meta diária deve seguir o DIA DE ABERTURA do turno
+    //    (mesmo que passe da meia-noite).
+    // 2) Se hoje não for um dia planejado de trabalho, mostramos a meta do PRÓXIMO dia planejado.
+    // Isso resolve o caso clássico: encerrou turno após meia-noite / domingo (folga) e a meta precisa
+    // aparecer para o próximo dia útil.
+    const goalDayStr = (() => {
+      try {
+        if (shiftState.isActive || shiftState.isPaused) {
+          const openedAtMs =
+            toEpochMs(shiftState.startTimeMs) ??
+            (Number.isFinite(shiftState.elapsedSeconds) ? Date.now() - shiftState.elapsedSeconds * 1000 : null) ??
+            toEpochMs(shiftState.startTime) ??
+            Date.now();
+          return getLocalISODate(new Date(openedAtMs));
+        }
+
+        if (Array.isArray(plannedWorkDates) && plannedWorkDates.length > 0) {
+          // Se hoje não é dia de trabalho, pega o próximo dia planejado.
+          if (!plannedWorkDates.includes(todayStr)) {
+            const next = plannedWorkDates
+              .filter(d => d >= todayStr)
+              .sort()[0];
+            if (next) return next;
+          }
+        }
+      } catch {
+        // fallback abaixo
+      }
+      return todayStr;
+    })();
+
+    // Próximo dia planejado (para exibir "Próxima meta") quando o turno já foi encerrado.
+    // - Preferimos plannedWorkDates (se existir)
+    // - Caso não exista, usamos workDays para pular dias não trabalhados
+    const nextGoalDayStr = (() => {
+      try {
+        // 1) plannedWorkDates (mais preciso)
+        if (Array.isArray(plannedWorkDates) && plannedWorkDates.length > 0) {
+          const next = plannedWorkDates
+            .filter(d => d > goalDayStr)
+            .sort()[0];
+          if (next) return next;
+        }
+
+        // 2) fallback por preferência de dias da semana
+        const base = parseDateFromInput(goalDayStr);
+        for (let i = 1; i <= 14; i++) {
+          const cand = new Date(base);
+          cand.setDate(base.getDate() + i);
+          const dow = cand.getDay();
+          if (Array.isArray(workDays) && workDays.includes(dow)) {
+            return getLocalISODate(cand);
+          }
+        }
+
+        // 3) último fallback: amanhã
+        return addDaysToISODate(goalDayStr, 1);
+      } catch {
+        return addDaysToISODate(goalDayStr, 1);
+      }
+    })();
     
     // Shift & Basic Income
     const currentShiftEarnings = shiftState.earnings.uber + shiftState.earnings.n99 + shiftState.earnings.indrive + shiftState.earnings.private;
@@ -876,7 +949,7 @@ function App() {
 
     // Daily Logic (STABLE GOAL)
     const savedIncomeToday = transactions
-      .filter(t => t.type === TransactionType.INCOME && t.date === todayStr)
+      .filter(t => t.type === TransactionType.INCOME && t.date === goalDayStr)
       .reduce((acc, t) => acc + t.amount, 0);
     
     // Para metas do turno, o faturamento do dia inclui o turno em andamento
@@ -895,14 +968,14 @@ function App() {
     };
 
     const unpaidBillsThisMonth = billsThisMonth.filter(b => !b.isPaid).sort((a,b) => a.dueDate.localeCompare(b.dueDate));
-    let lastExpenseDate = todayStr;
+    let lastExpenseDate = goalDayStr;
     if (unpaidBillsThisMonth.length > 0) {
       lastExpenseDate = unpaidBillsThisMonth[unpaidBillsThisMonth.length - 1].dueDate;
     } else {
       const endOfMonth = new Date(new Date().getFullYear(), new Date().getMonth() + 1, 0);
       lastExpenseDate = [endOfMonth.getFullYear(), String(endOfMonth.getMonth() + 1).padStart(2,'0'), String(endOfMonth.getDate()).padStart(2,'0')].join('-');
     }
-    if (lastExpenseDate < todayStr) lastExpenseDate = todayStr;
+    if (lastExpenseDate < goalDayStr) lastExpenseDate = goalDayStr;
 
     const pendingBillsTotalMonth = unpaidBillsThisMonth.reduce((acc, b) => acc + b.amount, 0);
     const openingBalanceForMonth = openingBalances[currentMonthPrefix] || 0;
@@ -931,14 +1004,14 @@ function App() {
 
     const cashOnHand = openingBalanceForMonth + netProfitFinance;
 
-    const daysRemainingForExpenses = Math.max(1, countWorkDays(todayStr, lastExpenseDate));
+    const daysRemainingForExpenses = Math.max(1, countWorkDays(goalDayStr, lastExpenseDate));
     // O mínimo diário de contas usa o cenário congelado (sem os ganhos do turno em andamento)
     // para manter o valor cheio, enquanto o "falta p/ meta contas" considera o turno atual.
     const expenseTargetToday = minimumForBillsShiftFrozen > 0 ? minimumForBillsShiftFrozen / daysRemainingForExpenses : 0;
 
     const endOfMonth = new Date(new Date().getFullYear(), new Date().getMonth() + 1, 0);
     const endOfMonthStr = [endOfMonth.getFullYear(), String(endOfMonth.getMonth() + 1).padStart(2,'0'), String(endOfMonth.getDate()).padStart(2,'0')].join('-');
-    const daysRemainingForSalary = Math.max(1, countWorkDays(todayStr, endOfMonthStr));
+    const daysRemainingForSalary = Math.max(1, countWorkDays(goalDayStr, endOfMonthStr));
 
     const salaryTargetToday = S > 0 ? salaryRemainingStart / daysRemainingForSalary : 0;
 
@@ -956,6 +1029,27 @@ function App() {
 
     let remainingForToday = Math.max(0, dailyGoal - F_today);
     let isGoalMet = F_today >= dailyGoal;
+
+    // --- Próxima meta (dia seguinte/útil) ---
+    // A ideia aqui é só exibir um "preview" da meta do próximo dia útil quando o turno já terminou.
+    // Isso NÃO altera cálculo, apenas mostra a próxima referência.
+    const nextDailyGoal = (() => {
+      try {
+        const nextDay = nextGoalDayStr;
+
+        // Reaproveita os mesmos componentes de cálculo (contas + salário), só mudando o dia de referência.
+        const lastExpenseDateNext = lastExpenseDate < nextDay ? nextDay : lastExpenseDate;
+        const daysRemainingForExpensesNext = Math.max(1, countWorkDays(nextDay, lastExpenseDateNext));
+        const expenseTargetNext = minimumForBillsShiftFrozen > 0 ? minimumForBillsShiftFrozen / daysRemainingForExpensesNext : 0;
+
+        const daysRemainingForSalaryNext = Math.max(1, countWorkDays(nextDay, endOfMonthStr));
+        const salaryTargetNext = S > 0 ? salaryRemainingStart / daysRemainingForSalaryNext : 0;
+
+        return S > 0 ? Math.max(expenseTargetNext, salaryTargetNext) : expenseTargetNext;
+      } catch {
+        return 0;
+      }
+    })();
     
     // Status Color
     let dailyStatusColor = "bg-emerald-600";
@@ -1016,13 +1110,16 @@ function App() {
         cashForBillsShift,
         openingBalanceForMonth, monthlyNetProfit, pendingBillsTotalMonth, remainingToMonthlyGoal,
         dailyGoal, expenseTargetToday, salaryTargetToday, F_today, dailyStatusColor, dailyStatusMessage,
+        goalDayStr,
+        nextGoalDayStr,
+        nextDailyGoal,
         remainingAccountsToday, remainingSalaryToday,
         remainingForToday, isGoalMet,
         pendingBillsTotalAll, remainingDays,
         totalExpensesThisMonth: totalExpenseFinance,
         cashOnHand,
     };
-  }, [transactions, bills, plannedWorkDates, monthlySalaryGoal, shiftState, openingBalances, isShiftModalOpen]);
+  }, [transactions, bills, plannedWorkDates, workDays, monthlySalaryGoal, shiftState, openingBalances, isShiftModalOpen]);
 
   // ... (Other useMemos: billsSummary, filteredHistory, historySummary, pieData - Unchanged)
   const billsSummary = useMemo(() => ({
@@ -1271,6 +1368,14 @@ function App() {
                     <span>Meta Total: {formatCurrency(stats.dailyGoal)}</span>
                     <span>Faturado: {formatCurrency(stats.F_today)}</span>
                  </div>
+
+                 {/* Próxima meta (após encerrar turno) */}
+                 {(!shiftState.isActive && !shiftState.isPaused) && stats.isGoalMet && stats.nextGoalDayStr && stats.nextGoalDayStr !== stats.goalDayStr && stats.nextDailyGoal > 0 && (
+                   <div className="flex justify-between items-center text-[10px] font-semibold bg-black/10 rounded-lg px-2 py-1 mb-2">
+                     <span className="opacity-90">Próxima meta ({formatDateBr(stats.nextGoalDayStr)}):</span>
+                     <span className="opacity-90">{formatCurrency(stats.nextDailyGoal)}</span>
+                   </div>
+                 )}
 
                  {/* Center Hero: FALTA / RESTANTE */}
                  <div className="text-center py-2">
