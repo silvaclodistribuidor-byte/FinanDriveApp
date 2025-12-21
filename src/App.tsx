@@ -192,6 +192,8 @@ const normalizeShiftState = (raw: any): ShiftState => {
     isPaused: Boolean(r.isPaused),
     startTime: null,
     startTimeMs: null,
+    pausedAtMs: null,
+    totalPausedMs: 0,
     elapsedSeconds: 0,
     earnings: {
       uber: Number(r?.earnings?.uber) || 0,
@@ -210,14 +212,6 @@ const normalizeShiftState = (raw: any): ShiftState => {
   const startTimeMsRaw = toEpochMs(r.startTimeMs);
   const startTimeRaw = toEpochMs(r.startTime);
 
-  // Controle de pausa (novo modelo):
-  // - pausedAtMs: instante em que pausou
-  // - totalPausedMs: total acumulado de tempo pausado (não inclui a pausa atual, se estiver pausado)
-  const pausedAtMsRaw = toEpochMs(r.pausedAtMs);
-  const totalPausedMsRaw = Number(r.totalPausedMs);
-  normalized.pausedAtMs = pausedAtMsRaw ?? null;
-  normalized.totalPausedMs = Number.isFinite(totalPausedMsRaw) ? Math.max(0, totalPausedMsRaw) : 0;
-
   // startTimeMs = "início real do turno" (não deve mudar no pause/resume)
   let openedAt = startTimeMsRaw;
   if (openedAt == null && normalized.isActive && normalized.elapsedSeconds > 0) {
@@ -227,8 +221,19 @@ const normalizeShiftState = (raw: any): ShiftState => {
   if (openedAt == null) openedAt = startTimeRaw;
   normalized.startTimeMs = openedAt ?? null;
 
-  // startTime = mantemos alinhado ao início REAL do turno (startTimeMs) para evitar bugs em pause/refresh.
-  normalized.startTime = normalized.startTimeMs ?? startTimeRaw ?? (normalized.isActive ? Date.now() : null);
+  // startTime = compatibilidade (versões antigas). Mantemos como referência, mas o cronômetro
+  // usa startTimeMs + totalPausedMs/pausedAtMs.
+  normalized.startTime = startTimeRaw ?? normalized.startTimeMs ?? (normalized.isActive ? Date.now() : null);
+
+  const pausedAtMsRaw = toEpochMs(r.pausedAtMs);
+  normalized.pausedAtMs = pausedAtMsRaw ?? null;
+  const totalPausedMsRaw = Number(r.totalPausedMs);
+  normalized.totalPausedMs = Number.isFinite(totalPausedMsRaw) ? Math.max(0, Math.floor(totalPausedMsRaw)) : 0;
+
+  // Se o turno está pausado mas não tem pausedAtMs, assumimos "agora" para travar o tempo (melhor esforço).
+  if (normalized.isActive && normalized.isPaused && normalized.pausedAtMs == null) {
+    normalized.pausedAtMs = Date.now();
+  }
 
   const list = r.expenseList;
   if (Array.isArray(list)) {
@@ -246,32 +251,6 @@ const normalizeShiftState = (raw: any): ShiftState => {
   }
 
   return normalized;
-};
-
-// --- Cronômetro (fonte da verdade por timestamp) ---
-// Regras:
-// - startTimeMs: início REAL do turno (não muda)
-// - totalPausedMs: soma das pausas concluídas
-// - pausedAtMs: instante de início da pausa atual (somente quando isPaused=true)
-// O elapsedSeconds é DERIVADO desses valores, evitando drift/atraso e "voltar" no refresh.
-const computeShiftElapsedSeconds = (shift: ShiftState, nowMs: number = Date.now()) => {
-  if (!shift?.isActive) return 0;
-
-  // Se estiver pausado e não temos pausedAtMs (contas antigas), congelamos no último valor conhecido.
-  if (shift.isPaused && typeof shift.pausedAtMs !== 'number') {
-    const fallback = Number(shift.elapsedSeconds);
-    return Number.isFinite(fallback) ? Math.max(0, Math.floor(fallback)) : 0;
-  }
-
-  const start = (typeof shift.startTimeMs === 'number' ? shift.startTimeMs : null)
-    ?? (typeof shift.startTime === 'number' ? shift.startTime : null)
-    ?? nowMs;
-  const totalPaused = Number.isFinite(Number(shift.totalPausedMs)) ? Math.max(0, Number(shift.totalPausedMs)) : 0;
-  const end = shift.isPaused
-    ? ((typeof shift.pausedAtMs === 'number' ? shift.pausedAtMs : null) ?? nowMs)
-    : nowMs;
-  const raw = end - start - totalPaused;
-  return Math.max(0, Math.floor(raw / 1000));
 };
 
 const buildInitialAppState = () => ({
@@ -330,6 +309,16 @@ function App() {
   const [shiftState, setShiftState] = useState<ShiftState>(createInitialShiftState());
 
   const timerRef = useRef<number | null>(null);
+  // Cronômetro (fonte da verdade): startTimeMs + totalPausedMs + pausedAtMs
+  // Isso evita drift/atraso depois de pausar e impede "voltar 1 minuto" ao dar refresh.
+  const computeElapsedSeconds = (s: ShiftState, nowMs: number = Date.now()) => {
+    const openedAt = s.startTimeMs ?? (typeof s.startTime === 'number' ? s.startTime : null);
+    if (!openedAt) return Math.max(0, Math.floor(Number(s.elapsedSeconds) || 0));
+    const totalPaused = Number.isFinite(s.totalPausedMs as any) ? Math.max(0, Number(s.totalPausedMs)) : 0;
+    const effectiveNow = s.isPaused && s.pausedAtMs ? s.pausedAtMs : nowMs;
+    const raw = Math.floor((effectiveNow - openedAt - totalPaused) / 1000);
+    return Math.max(0, raw);
+  };
 
   const prevShiftStateRef = useRef<ShiftState | null>(null);
 
@@ -424,14 +413,14 @@ function App() {
           if (data.shiftState) {
             let normalizedShift = normalizeShiftState(data.shiftState);
 
-            // Recalcula o cronômetro por timestamp (sem drift) ao hidratar.
+            // Reconciliamos o tempo assim que hidratamos, usando timestamps (sem drift).
             if (normalizedShift.isActive) {
-              const now = Date.now();
-              const recalculatedElapsed = computeShiftElapsedSeconds(normalizedShift, now);
-              const safeElapsed = Math.max(normalizedShift.elapsedSeconds ?? 0, recalculatedElapsed);
-              if (safeElapsed !== normalizedShift.elapsedSeconds) {
-                normalizedShift = { ...normalizedShift, elapsedSeconds: safeElapsed };
-              }
+              const recalculatedElapsed = computeElapsedSeconds(normalizedShift, Date.now());
+              // Nunca deixa voltar tempo sozinho.
+              normalizedShift = {
+                ...normalizedShift,
+                elapsedSeconds: Math.max(normalizedShift.elapsedSeconds ?? 0, recalculatedElapsed),
+              };
             }
 
             setShiftState(normalizedShift);
@@ -565,27 +554,23 @@ function App() {
       });
     }, [user, transactions, bills, categories, shiftState, isLoadingData, workDays, plannedWorkDates, monthlySalaryGoal, openingBalances, hasLoadedData, hasPendingChanges]);
 
-  // Shift Timer (cronômetro por timestamp)
-  // - Não deriva do setInterval (evita drift)
-  // - Pause/refresh não faz o tempo "voltar"
+  // Shift Timer (cronômetro por timestamps) — não drifta e não volta tempo após pause/refresh.
   useEffect(() => {
     clearShiftTimer();
-
     if (!shiftState.isActive || shiftState.isPaused) return;
 
     const tick = () => {
-      setShiftState((prev) => {
+      setShiftState(prev => {
         if (!prev.isActive || prev.isPaused) return prev;
-        const now = Date.now();
-        const nextElapsed = computeShiftElapsedSeconds(prev, now);
+        const computed = computeElapsedSeconds(prev, Date.now());
+        // Não deixa "voltar" sozinho.
+        const nextElapsed = Math.max(prev.elapsedSeconds || 0, computed);
         return prev.elapsedSeconds === nextElapsed ? prev : { ...prev, elapsedSeconds: nextElapsed };
       });
     };
 
-    // Atualiza já ao iniciar/retomar
     tick();
     timerRef.current = window.setInterval(tick, 1000);
-
     return () => clearShiftTimer();
   }, [shiftState.isActive, shiftState.isPaused, shiftState.startTimeMs, shiftState.totalPausedMs]);
 
@@ -594,10 +579,10 @@ function App() {
     if (!shiftState.isActive || shiftState.isPaused) return;
 
     const reconcile = () => {
-      setShiftState((prev) => {
+      setShiftState(prev => {
         if (!prev.isActive || prev.isPaused) return prev;
-        const now = Date.now();
-        const nextElapsed = computeShiftElapsedSeconds(prev, now);
+        const computed = computeElapsedSeconds(prev, Date.now());
+        const nextElapsed = Math.max(prev.elapsedSeconds || 0, computed);
         return prev.elapsedSeconds === nextElapsed ? prev : { ...prev, elapsedSeconds: nextElapsed };
       });
     };
@@ -734,48 +719,53 @@ function App() {
 
       const now = Date.now();
 
-      // Retomar (acumula o tempo pausado)
+      // Retomar
       if (prev.isPaused) {
-        const pausedAt = typeof prev.pausedAtMs === 'number' ? prev.pausedAtMs : now;
-        const totalPaused = (Number(prev.totalPausedMs) || 0) + Math.max(0, now - pausedAt);
+        const pausedAt = prev.pausedAtMs ?? now;
+        const addedPause = Math.max(0, now - pausedAt);
+        const totalPausedMs = (prev.totalPausedMs || 0) + addedPause;
+
         const resumed: ShiftState = {
           ...prev,
           isPaused: false,
           pausedAtMs: null,
-          totalPausedMs: totalPaused,
-          // startTime/startTimeMs permanecem como início REAL do turno
-          startTimeMs: prev.startTimeMs ?? prev.startTime ?? now,
+          totalPausedMs,
+          // startTime é compatibilidade; mantemos apontando para o início real
           startTime: prev.startTimeMs ?? prev.startTime ?? now,
+          startTimeMs: prev.startTimeMs ?? prev.startTime ?? now,
         };
-        const elapsedSeconds = computeShiftElapsedSeconds(resumed, now);
-        return { ...resumed, elapsedSeconds };
+        const nextElapsed = Math.max(prev.elapsedSeconds || 0, computeElapsedSeconds(resumed, now));
+        return { ...resumed, elapsedSeconds: nextElapsed };
       }
 
-      // Pausar (congela o tempo no instante da pausa)
-      const elapsedSeconds = computeShiftElapsedSeconds(prev, now);
-      clearShiftTimer();
-      return {
+      // Pausar: travamos o tempo no instante atual.
+      const paused: ShiftState = {
         ...prev,
         isPaused: true,
         pausedAtMs: now,
-        totalPausedMs: Number(prev.totalPausedMs) || 0,
-        elapsedSeconds,
+        startTime: prev.startTimeMs ?? prev.startTime ?? now,
+        startTimeMs: prev.startTimeMs ?? prev.startTime ?? now,
       };
+      const nextElapsed = Math.max(prev.elapsedSeconds || 0, computeElapsedSeconds(paused, now));
+      return { ...paused, elapsedSeconds: nextElapsed };
     });
   };
 
   const handleStopShift = () => {
     clearShiftTimer();
+
     const now = Date.now();
     setShiftState(prev => {
-      if (!prev.isActive) return prev;
-      const elapsedSeconds = computeShiftElapsedSeconds(prev, now);
-      return {
+      const pausedAtMs = prev.pausedAtMs ?? now;
+      const frozen: ShiftState = {
         ...prev,
         isPaused: true,
-        pausedAtMs: now,
-        elapsedSeconds,
+        pausedAtMs,
+        startTime: prev.startTimeMs ?? prev.startTime ?? now,
+        startTimeMs: prev.startTimeMs ?? prev.startTime ?? now,
       };
+      const nextElapsed = Math.max(prev.elapsedSeconds || 0, computeElapsedSeconds(frozen, now));
+      return { ...frozen, elapsedSeconds: nextElapsed };
     });
     setIsShiftModalOpen(true);
   };
@@ -805,14 +795,14 @@ function App() {
     const newOpenedAtMs = newOpenedAt.getTime();
 
     setShiftState(prev => {
-      if (!prev.isActive) return prev;
       const updated: ShiftState = {
         ...prev,
+        // Ajusta apenas a âncora real do turno. O cronômetro recalcula pelo timestamp.
         startTimeMs: newOpenedAtMs,
         startTime: newOpenedAtMs,
       };
-      const elapsedSeconds = computeShiftElapsedSeconds(updated, Date.now());
-      return { ...updated, elapsedSeconds };
+      const recomputed = computeElapsedSeconds(updated, Date.now());
+      return { ...updated, elapsedSeconds: recomputed };
     });
   };
 
@@ -1284,6 +1274,17 @@ function App() {
     }
   };
 
+  const canShowNextGoalAsPrimary =
+    !shiftState.isActive &&
+    !shiftState.isPaused &&
+    stats.isGoalMet &&
+    Boolean(stats.nextGoalDayStr) &&
+    stats.nextGoalDayStr !== stats.goalDayStr &&
+    stats.nextDailyGoal > 0;
+
+  const goalSurplus = Math.max(0, stats.F_today - stats.dailyGoal);
+  const remainingForNextGoal = Math.max(0, stats.nextDailyGoal - goalSurplus);
+
   return (
     <div className="h-screen bg-slate-100 flex flex-col md:flex-row font-sans text-slate-900 overflow-hidden">
       {/* Mobile Header */}
@@ -1369,25 +1370,40 @@ function App() {
                     <span>Faturado: {formatCurrency(stats.F_today)}</span>
                  </div>
 
-                 {/* Próxima meta (após encerrar turno) */}
-                 {(!shiftState.isActive && !shiftState.isPaused) && stats.isGoalMet && stats.nextGoalDayStr && stats.nextGoalDayStr !== stats.goalDayStr && stats.nextDailyGoal > 0 && (
-                   <div className="flex justify-between items-center text-[10px] font-semibold bg-black/10 rounded-lg px-2 py-1 mb-2">
-                     <span className="opacity-90">Próxima meta ({formatDateBr(stats.nextGoalDayStr)}):</span>
-                     <span className="opacity-90">{formatCurrency(stats.nextDailyGoal)}</span>
-                   </div>
-                 )}
-
-                 {/* Center Hero: FALTA / RESTANTE */}
+                 {/* Center Hero */}
                  <div className="text-center py-2">
-                    <p className="text-xs font-medium opacity-90 mb-0.5">
-                        {stats.isGoalMet ? 'Meta batida! Excedente:' : 'Falta para a meta:'}
-                    </p>
-                    <h3 className="text-4xl font-extrabold tracking-tight">
-                        {stats.isGoalMet
-                            ? `+ ${formatCurrency(stats.F_today - stats.dailyGoal, true)}`
+                    {canShowNextGoalAsPrimary ? (
+                      <>
+                        <p className="text-xs font-medium opacity-90 mb-0.5">
+                          Falta p/ próxima meta ({formatDateBr(stats.nextGoalDayStr)}):
+                        </p>
+                        <h3 className="text-4xl font-extrabold tracking-tight">
+                          {formatCurrency(remainingForNextGoal, true)}
+                        </h3>
+                        <div className="mt-1 text-[11px] font-semibold opacity-90 flex flex-col gap-0.5">
+                          <div className="flex justify-center gap-2">
+                            <span className="opacity-80">Meta do próximo dia:</span>
+                            <span>{formatCurrency(stats.nextDailyGoal, true)}</span>
+                          </div>
+                          <div className="flex justify-center gap-2">
+                            <span className="opacity-80">Excedente de hoje:</span>
+                            <span>+ {formatCurrency(goalSurplus, true)}</span>
+                          </div>
+                        </div>
+                      </>
+                    ) : (
+                      <>
+                        <p className="text-xs font-medium opacity-90 mb-0.5">
+                          {stats.isGoalMet ? 'Meta batida! Excedente:' : 'Falta para a meta:'}
+                        </p>
+                        <h3 className="text-4xl font-extrabold tracking-tight">
+                          {stats.isGoalMet
+                            ? `+ ${formatCurrency(goalSurplus, true)}`
                             : formatCurrency(stats.remainingForToday, true)
-                        }
-                    </h3>
+                          }
+                        </h3>
+                      </>
+                    )}
                  </div>
 
                  <div className="grid grid-cols-2 gap-2 mt-1 text-[11px] font-semibold">
@@ -1429,8 +1445,13 @@ function App() {
             <div className="grid grid-cols-2 gap-2 mb-2 shrink-0">
               <div className="bg-slate-900/80 rounded-xl p-1 border border-slate-800 shadow-lg flex flex-col justify-center items-center relative group h-16">
                 <div className="text-slate-500 text-[9px] font-bold uppercase tracking-wider mb-0.5 flex items-center gap-1"><Clock size={9} /> Tempo</div>
-                <div className="text-xl font-mono font-bold text-white tracking-tighter">
-                  {formatTime(shiftState.elapsedSeconds)}
+                <div className="flex items-baseline justify-center gap-1 font-mono font-bold text-white tracking-tighter tabular-nums">
+                  <span className="text-xl">
+                    {Math.floor(shiftState.elapsedSeconds / 3600)}h
+                  </span>
+                  <span className="text-xl">
+                    {String(Math.floor((shiftState.elapsedSeconds % 3600) / 60)).padStart(2, '0')}m
+                  </span>
                 </div>
                 {shiftState.isActive && <button onClick={handleEditStartTime} className="absolute top-1 right-1 p-1 text-white bg-indigo-600 hover:bg-indigo-500 rounded-lg shadow-md transition-colors z-20 border border-white/20"><Edit2 size={10} /></button>}
               </div>
@@ -1448,14 +1469,14 @@ function App() {
               <button onClick={() => handleOpenEntry('private')} disabled={!shiftState.isActive || shiftState.isPaused} className="bg-slate-700 hover:bg-slate-600 border border-slate-600 rounded-xl px-2 h-12 flex items-center justify-between transition-all active:scale-95 disabled:opacity-40"><div className="flex items-center gap-1"><div className="bg-white/10 p-1 rounded text-white"><Wallet size={10} /></div><div className="text-slate-300 text-[9px] uppercase font-bold">Part.</div></div><div className="text-white font-bold text-sm">{formatCurrency(shiftState.earnings.private)}</div></button>
               <button onClick={() => handleOpenEntry('km')} disabled={!shiftState.isActive || shiftState.isPaused} className="bg-blue-600 hover:bg-blue-500 border border-blue-500 rounded-xl px-2 h-12 flex items-center justify-between transition-all active:scale-95 disabled:opacity-40 relative">
                 <div className="flex items-center gap-1"><div className="bg-white/20 p-1 rounded text-white"><Gauge size={10} /></div><div className="text-blue-100 text-[9px] uppercase font-bold">KM</div></div><div className="text-white font-bold text-sm">{shiftState.km.toFixed(1)}</div>
-                <div
-                  className="absolute -top-1 -right-1 bg-white/80 text-blue-700 rounded-full p-1 shadow border border-blue-200"
+                <button
+                  type="button"
+                  className="absolute bottom-1 right-1 bg-black/20 hover:bg-black/30 text-white rounded-full p-1 shadow-sm border border-white/20 transition-colors"
                   onClick={(e) => { e.stopPropagation(); handleManualKmAdjust(); }}
-                  role="button"
-                  tabIndex={0}
+                  title="Ajustar KM"
                 >
                   <Edit2 size={12} />
-                </div>
+                </button>
               </button>
               <button onClick={() => handleOpenEntry('expense')} disabled={!shiftState.isActive || shiftState.isPaused} className="bg-rose-600 hover:bg-rose-500 border border-rose-500 rounded-xl px-2 h-12 flex items-center justify-between transition-all active:scale-95 disabled:opacity-40"><div className="flex items-center gap-1"><div className="bg-white/20 p-1 rounded text-white"><Fuel size={10} /></div><div className="text-rose-100 text-[9px] uppercase font-bold">Gasto</div></div><div className="text-white font-bold text-sm">{formatCurrency(shiftState.expenses)}</div></button>
             </div>
