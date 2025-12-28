@@ -1,0 +1,12 @@
+[
+  {
+    "relation": ["delegate_permission/common.handle_all_urls"],
+    "target": {
+      "namespace": "android_app",
+      "package_name": "br.com.finandrive.app.twa",
+      "sha256_cert_fingerprints": [
+        "23:16:22:7D:5C:B3:08:FF:F2:3F:B8:96:56:E0:0E:28:03:B0:19:39:CC:84:DC:BF:EA:1A:55:70:DB:DE:22:7C"
+      ]
+    }
+  }
+]
