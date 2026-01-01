@@ -70,6 +70,13 @@ const getTodayString = () => {
   ].join('-');
 };
 
+const formatMonthYearBr = (monthKey: string) => {
+  if (!monthKey) return '-';
+  const [year, month] = monthKey.split('-').map(Number);
+  const date = new Date(year, (month || 1) - 1, 1);
+  return date.toLocaleDateString('pt-BR', { month: 'long', year: 'numeric' });
+};
+
 
 // Data helpers
 // IMPORTANTE: use data local (não UTC) para evitar virar o dia errado (ex.: depois das 21–22h no Brasil).
@@ -302,6 +309,7 @@ function App() {
   const [isShiftModalOpen, setIsShiftModalOpen] = useState(false);
   const [isBillModalOpen, setIsBillModalOpen] = useState(false);
   const [editingBill, setEditingBill] = useState<Bill | null>(null);
+  const [selectedBillsMonth, setSelectedBillsMonth] = useState(() => getTodayString().substring(0, 7));
   const [isSettingsModalOpen, setIsSettingsModalOpen] = useState(false);
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
   const [entryModalOpen, setEntryModalOpen] = useState(false);
@@ -1130,10 +1138,21 @@ function App() {
   }, [transactions, bills, plannedWorkDates, workDays, monthlySalaryGoal, shiftState, openingBalances, isShiftModalOpen]);
 
   // ... (Other useMemos: billsSummary, filteredHistory, historySummary, pieData - Unchanged)
+  const availableBillMonths = useMemo(() => {
+    const months = new Set(bills.map(b => b.dueDate.substring(0, 7)));
+    months.add(currentMonthKey);
+    return Array.from(months).sort();
+  }, [bills, currentMonthKey]);
+
+  const billsForSelectedMonth = useMemo(
+    () => bills.filter(b => b.dueDate.startsWith(selectedBillsMonth)),
+    [bills, selectedBillsMonth],
+  );
+
   const billsSummary = useMemo(() => ({
-    paid: bills.filter(b => b.isPaid).reduce((acc, b) => acc + b.amount, 0),
-    pending: bills.filter(b => !b.isPaid).reduce((acc, b) => acc + b.amount, 0)
-  }), [bills]);
+    paid: billsForSelectedMonth.filter(b => b.isPaid).reduce((acc, b) => acc + b.amount, 0),
+    pending: billsForSelectedMonth.filter(b => !b.isPaid).reduce((acc, b) => acc + b.amount, 0)
+  }), [billsForSelectedMonth]);
 
   const upcomingBills = useMemo(() => (
     bills
@@ -1683,22 +1702,45 @@ function App() {
             {/* Bills Content */}
             {activeTab === 'bills' && (
               <div className="space-y-6 animate-in fade-in slide-in-from-bottom-4 duration-500">
-                <div className="grid grid-cols-2 gap-4">
-                  <div className="bg-white p-5 rounded-2xl shadow-sm border border-emerald-100 flex items-center justify-between">
-                    <div><p className="text-xs font-bold text-emerald-600 uppercase mb-1">Total Pago</p><h3 className="text-2xl font-bold text-emerald-700">{formatCurrency(billsSummary.paid)}</h3></div>
-                    <div className="bg-emerald-50 p-3 rounded-full text-emerald-600"><CheckCircle2 size={24} /></div>
+                <div className="bg-white p-4 rounded-2xl shadow-sm border border-slate-200 flex flex-wrap items-center gap-3 justify-between">
+                  <div className="flex flex-wrap items-center gap-4">
+                    <div className="flex items-center gap-2 text-emerald-700 text-sm font-semibold">
+                      <div className="bg-emerald-50 p-2 rounded-full text-emerald-600"><CheckCircle2 size={16} /></div>
+                      <span className="uppercase text-[10px] tracking-wider text-emerald-600">Total Pago</span>
+                      <span className="text-base font-bold">{formatCurrency(billsSummary.paid)}</span>
+                    </div>
+                    <div className="flex items-center gap-2 text-rose-700 text-sm font-semibold">
+                      <div className="bg-rose-50 p-2 rounded-full text-rose-600"><AlertCircle size={16} /></div>
+                      <span className="uppercase text-[10px] tracking-wider text-rose-600">A Pagar</span>
+                      <span className="text-base font-bold">{formatCurrency(billsSummary.pending)}</span>
+                    </div>
                   </div>
-                  <div className="bg-white p-5 rounded-2xl shadow-sm border border-rose-100 flex items-center justify-between">
-                    <div><p className="text-xs font-bold text-rose-600 uppercase mb-1">A Pagar</p><h3 className="text-2xl font-bold text-rose-700">{formatCurrency(billsSummary.pending)}</h3></div>
-                    <div className="bg-rose-50 p-3 rounded-full text-rose-600"><AlertCircle size={24} /></div>
+                  <div className="flex items-center gap-3">
+                    <div className="flex flex-col">
+                      <span className="text-[10px] font-bold uppercase text-slate-500">Mês</span>
+                      <select
+                        value={selectedBillsMonth}
+                        onChange={e => setSelectedBillsMonth(e.target.value)}
+                        className="border border-slate-200 rounded-lg px-3 py-2 text-sm bg-white"
+                      >
+                        {availableBillMonths.map(month => (
+                          <option key={month} value={month}>
+                            {formatMonthYearBr(month)}
+                          </option>
+                        ))}
+                      </select>
+                    </div>
+                    <button onClick={() => { setEditingBill(null); setIsBillModalOpen(true); }} className="flex items-center gap-2 bg-rose-600 text-white px-4 py-2 rounded-lg hover:bg-rose-700 transition-colors shadow-lg shadow-rose-200"><Plus size={16} /> Adicionar</button>
                   </div>
                 </div>
-                <div className="flex justify-between items-center bg-white p-6 rounded-2xl shadow-sm border border-slate-200">
-                  <div><h2 className="text-lg font-bold text-slate-800">Contas a Pagar</h2><p className="text-slate-500 text-sm">Gerencie suas obrigações futuras.</p></div>
-                  <button onClick={() => { setEditingBill(null); setIsBillModalOpen(true); }} className="flex items-center gap-2 bg-rose-600 text-white px-4 py-2 rounded-lg hover:bg-rose-700 transition-colors shadow-lg shadow-rose-200"><Plus size={16} /> Adicionar</button>
+                <div className="flex justify-between items-center bg-white p-4 rounded-2xl shadow-sm border border-slate-200">
+                  <div>
+                    <h2 className="text-lg font-bold text-slate-800">Contas a Pagar</h2>
+                    <p className="text-slate-500 text-sm">Exibindo {formatMonthYearBr(selectedBillsMonth)}.</p>
+                  </div>
                 </div>
                 <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
-                  {bills.map(bill => (
+                  {billsForSelectedMonth.map(bill => (
                     <div key={bill.id} className={`p-5 rounded-xl border transition-all ${bill.isPaid ? 'bg-slate-50 border-slate-200 opacity-75' : 'bg-white border-rose-100 shadow-sm'}`}>
                       <div className="flex justify-between items-start mb-3">
                         <div className={`p-2 rounded-lg ${bill.isPaid ? 'bg-emerald-100 text-emerald-600' : 'bg-rose-100 text-rose-600'}`}>{bill.isPaid ? <Wallet size={20} /> : <CalendarClock size={20} />}</div>
