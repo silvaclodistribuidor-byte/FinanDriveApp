@@ -37,6 +37,10 @@ export interface Bill {
   categoryId?: string;
 }
 
+export interface BillFormData extends Omit<Bill, 'id'> {
+  recurrenceMonths?: number;
+}
+
 export interface ShiftExpense {
   amount: number;
   description: string;

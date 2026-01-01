@@ -53,7 +53,7 @@ import {
   logoutUser,
   createDriverDocIfMissing,
 } from "./services/firestoreService";
-import { Transaction, TransactionType, ExpenseCategory, Bill, ShiftState, DEFAULT_CATEGORIES, Category } from './types';
+import { Transaction, TransactionType, ExpenseCategory, Bill, ShiftState, DEFAULT_CATEGORIES, Category, BillFormData } from './types';
 
 // Usuário usado internamente no app (derivado do Firebase Auth)
 export interface User {
@@ -85,6 +85,13 @@ const addDaysToISODate = (iso: string, days: number) => {
   const [y, m, d] = iso.split('-').map(Number);
   const date = new Date(y, (m || 1) - 1, d || 1);
   date.setDate(date.getDate() + days);
+  return getLocalISODate(date);
+};
+
+const addMonthsToISODate = (iso: string, months: number) => {
+  const [y, m, d] = iso.split('-').map(Number);
+  const date = new Date(y, (m || 1) - 1, d || 1);
+  date.setMonth(date.getMonth() + months);
   return getLocalISODate(date);
 };
 
@@ -1093,7 +1100,7 @@ function App() {
       statusMessage = "✅ Contas do mês garantidas com o lucro atual. Meta do mês atingida!";
     }
 
-    const pendingBillsTotalAll = bills.filter(b => !b.isPaid).reduce((acc, b) => acc + b.amount, 0);
+    const pendingBillsTotalAll = billsThisMonth.filter(b => !b.isPaid).reduce((acc, b) => acc + b.amount, 0);
     const remainingPlannedDates = plannedWorkDates.filter(d => d.startsWith(currentMonthPrefix) && d >= todayStr).sort();
     const remainingDays = remainingPlannedDates.length;
 
@@ -1236,12 +1243,19 @@ function App() {
     setShiftState(createInitialShiftState());
   };
 
-  const handleSaveBill = (billData: Omit<Bill, 'id'>) => {
+  const handleSaveBill = (billData: BillFormData) => {
+    const { recurrenceMonths, ...billPayload } = billData;
     if (editingBill) {
-      setBills(prev => prev.map(b => (b.id === editingBill.id ? { ...b, ...billData } : b)));
+      setBills(prev => prev.map(b => (b.id === editingBill.id ? { ...b, ...billPayload } : b)));
       setEditingBill(null);
     } else {
-      setBills(prev => [...prev, { ...billData, id: Math.random().toString(36).substr(2, 9) }]);
+      const monthsToCreate = Math.max(1, Math.floor(recurrenceMonths || 1));
+      const newBills = Array.from({ length: monthsToCreate }, (_, index) => ({
+        ...billPayload,
+        id: Math.random().toString(36).substr(2, 9),
+        dueDate: addMonthsToISODate(billPayload.dueDate, index),
+      }));
+      setBills(prev => [...prev, ...newBills]);
     }
     setIsBillModalOpen(false);
   };
