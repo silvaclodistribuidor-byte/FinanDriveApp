@@ -935,6 +935,14 @@ function App() {
     const D = totalMonthlyExpenses;
 
     const savedIncomeThisMonth = monthlyIncomeFromTransactions;
+    const savedIncomeBeforeGoalDay = transactions
+      .filter(
+        t =>
+          t.type === TransactionType.INCOME &&
+          t.date.startsWith(currentMonthPrefix) &&
+          t.date < goalDayStr,
+      )
+      .reduce((acc, t) => acc + t.amount, 0);
 
     const F = savedIncomeThisMonth + effectiveShiftEarningsFinance;
     const S = monthlySalaryGoal || 0;
@@ -952,8 +960,9 @@ function App() {
     const salaryRemainingForProgress = S > 0 ? Math.max(0, S - salaryAccumulatedForProgress) : 0;
 
     // Daily Target Calc (meta do dia congelada no início, sem os ganhos do turno ativo)
-    const salaryAccumulatedStart = Math.max(0, savedIncomeThisMonth);
+    const salaryAccumulatedStart = Math.max(0, savedIncomeBeforeGoalDay);
     const salaryRemainingStart = S > 0 ? Math.max(0, S - salaryAccumulatedStart) : 0;
+    const salaryRemainingAfterToday = S > 0 ? Math.max(0, S - savedIncomeThisMonth) : 0;
 
     const countWorkDays = (startStr: string, endStr: string) => {
       return plannedWorkDates.filter(d => d >= startStr && d <= endStr).length;
@@ -1035,7 +1044,7 @@ function App() {
         const expenseTargetNext = minimumForBillsShiftFrozen > 0 ? minimumForBillsShiftFrozen / daysRemainingForExpensesNext : 0;
 
         const daysRemainingForSalaryNext = Math.max(1, countWorkDays(nextDay, endOfMonthStr));
-        const salaryTargetNext = S > 0 ? salaryRemainingStart / daysRemainingForSalaryNext : 0;
+        const salaryTargetNext = S > 0 ? salaryRemainingAfterToday / daysRemainingForSalaryNext : 0;
 
         return S > 0 ? Math.max(expenseTargetNext, salaryTargetNext) : expenseTargetNext;
       } catch {
