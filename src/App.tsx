@@ -314,6 +314,14 @@ function App() {
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
   const [entryModalOpen, setEntryModalOpen] = useState(false);
 
+  useEffect(() => {
+    if (!mobileMenuOpen) return undefined;
+    const timeout = window.setTimeout(() => {
+      setMobileMenuOpen(false);
+    }, 4000);
+    return () => window.clearTimeout(timeout);
+  }, [mobileMenuOpen]);
+
   // Filter & Input State
   const [historyRange, setHistoryRange] = useState<'today' | 'week' | 'month' | 'all' | 'custom'>('all');
   const [historyCustomStart, setHistoryCustomStart] = useState('');
@@ -1345,6 +1353,14 @@ function App() {
       )}
 
       {/* Sidebar */}
+      {mobileMenuOpen && (
+        <button
+          type="button"
+          aria-label="Fechar menu"
+          onClick={() => setMobileMenuOpen(false)}
+          className="fixed inset-0 z-30 bg-black/40 md:hidden"
+        />
+      )}
       <aside className={`fixed inset-y-0 left-0 z-40 w-64 bg-slate-900 text-slate-300 transform transition-transform duration-300 ease-in-out md:relative md:translate-x-0 shrink-0 ${mobileMenuOpen ? 'translate-x-0' : '-translate-x-full'} ${activeTab === 'shift' ? 'md:w-20 lg:w-64' : ''}`}>
         <div className="p-6 hidden md:flex flex-col justify-center items-center border-b border-slate-800 h-24">
           <span className={`font-extrabold text-2xl tracking-tight text-white ${activeTab === 'shift' ? 'md:hidden lg:block' : ''}`}>FinanDrive</span>
