@@ -53,7 +53,7 @@ import {
   logoutUser,
   createDriverDocIfMissing,
 } from "./services/firestoreService";
-import { Transaction, TransactionType, ExpenseCategory, Bill, ShiftState, DEFAULT_CATEGORIES, Category } from './types';
+import { Transaction, TransactionType, ExpenseCategory, Bill, ShiftState, DEFAULT_CATEGORIES, Category, BillFormData } from './types';
 
 // Usuário usado internamente no app (derivado do Firebase Auth)
 export interface User {
@@ -68,6 +68,13 @@ const getTodayString = () => {
     String(now.getMonth() + 1).padStart(2, '0'),
     String(now.getDate()).padStart(2, '0')
   ].join('-');
+};
+
+const formatMonthYearBr = (monthKey: string) => {
+  if (!monthKey) return '-';
+  const [year, month] = monthKey.split('-').map(Number);
+  const date = new Date(year, (month || 1) - 1, 1);
+  return date.toLocaleDateString('pt-BR', { month: 'long', year: 'numeric' });
 };
 
 
@@ -85,6 +92,13 @@ const addDaysToISODate = (iso: string, days: number) => {
   const [y, m, d] = iso.split('-').map(Number);
   const date = new Date(y, (m || 1) - 1, d || 1);
   date.setDate(date.getDate() + days);
+  return getLocalISODate(date);
+};
+
+const addMonthsToISODate = (iso: string, months: number) => {
+  const [y, m, d] = iso.split('-').map(Number);
+  const date = new Date(y, (m || 1) - 1, d || 1);
+  date.setMonth(date.getMonth() + months);
   return getLocalISODate(date);
 };
 
@@ -295,9 +309,18 @@ function App() {
   const [isShiftModalOpen, setIsShiftModalOpen] = useState(false);
   const [isBillModalOpen, setIsBillModalOpen] = useState(false);
   const [editingBill, setEditingBill] = useState<Bill | null>(null);
+  const [selectedBillsMonth, setSelectedBillsMonth] = useState(() => getTodayString().substring(0, 7));
   const [isSettingsModalOpen, setIsSettingsModalOpen] = useState(false);
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
   const [entryModalOpen, setEntryModalOpen] = useState(false);
+
+  useEffect(() => {
+    if (!mobileMenuOpen) return undefined;
+    const timeout = window.setTimeout(() => {
+      setMobileMenuOpen(false);
+    }, 4000);
+    return () => window.clearTimeout(timeout);
+  }, [mobileMenuOpen]);
 
   // Filter & Input State
   const [historyRange, setHistoryRange] = useState<'today' | 'week' | 'month' | 'all' | 'custom'>('all');
@@ -935,6 +958,14 @@ function App() {
     const D = totalMonthlyExpenses;
 
     const savedIncomeThisMonth = monthlyIncomeFromTransactions;
+    const savedIncomeBeforeGoalDay = transactions
+      .filter(
+        t =>
+          t.type === TransactionType.INCOME &&
+          t.date.startsWith(currentMonthPrefix) &&
+          t.date < goalDayStr,
+      )
+      .reduce((acc, t) => acc + t.amount, 0);
 
     const F = savedIncomeThisMonth + effectiveShiftEarningsFinance;
     const S = monthlySalaryGoal || 0;
@@ -952,8 +983,9 @@ function App() {
     const salaryRemainingForProgress = S > 0 ? Math.max(0, S - salaryAccumulatedForProgress) : 0;
 
     // Daily Target Calc (meta do dia congelada no início, sem os ganhos do turno ativo)
-    const salaryAccumulatedStart = Math.max(0, savedIncomeThisMonth);
+    const salaryAccumulatedStart = Math.max(0, savedIncomeBeforeGoalDay);
     const salaryRemainingStart = S > 0 ? Math.max(0, S - salaryAccumulatedStart) : 0;
+    const salaryRemainingAfterToday = S > 0 ? Math.max(0, S - savedIncomeThisMonth) : 0;
 
     const countWorkDays = (startStr: string, endStr: string) => {
       return plannedWorkDates.filter(d => d >= startStr && d <= endStr).length;
@@ -1035,7 +1067,7 @@ function App() {
         const expenseTargetNext = minimumForBillsShiftFrozen > 0 ? minimumForBillsShiftFrozen / daysRemainingForExpensesNext : 0;
 
         const daysRemainingForSalaryNext = Math.max(1, countWorkDays(nextDay, endOfMonthStr));
-        const salaryTargetNext = S > 0 ? salaryRemainingStart / daysRemainingForSalaryNext : 0;
+        const salaryTargetNext = S > 0 ? salaryRemainingAfterToday / daysRemainingForSalaryNext : 0;
 
         return S > 0 ? Math.max(expenseTargetNext, salaryTargetNext) : expenseTargetNext;
       } catch {
@@ -1084,7 +1116,7 @@ function App() {
       statusMessage = "✅ Contas do mês garantidas com o lucro atual. Meta do mês atingida!";
     }
 
-    const pendingBillsTotalAll = bills.filter(b => !b.isPaid).reduce((acc, b) => acc + b.amount, 0);
+    const pendingBillsTotalAll = billsThisMonth.filter(b => !b.isPaid).reduce((acc, b) => acc + b.amount, 0);
     const remainingPlannedDates = plannedWorkDates.filter(d => d.startsWith(currentMonthPrefix) && d >= todayStr).sort();
     const remainingDays = remainingPlannedDates.length;
 
@@ -1114,10 +1146,21 @@ function App() {
   }, [transactions, bills, plannedWorkDates, workDays, monthlySalaryGoal, shiftState, openingBalances, isShiftModalOpen]);
 
   // ... (Other useMemos: billsSummary, filteredHistory, historySummary, pieData - Unchanged)
+  const availableBillMonths = useMemo(() => {
+    const months = new Set(bills.map(b => b.dueDate.substring(0, 7)));
+    months.add(currentMonthKey);
+    return Array.from(months).sort();
+  }, [bills, currentMonthKey]);
+
+  const billsForSelectedMonth = useMemo(
+    () => bills.filter(b => b.dueDate.startsWith(selectedBillsMonth)),
+    [bills, selectedBillsMonth],
+  );
+
   const billsSummary = useMemo(() => ({
-    paid: bills.filter(b => b.isPaid).reduce((acc, b) => acc + b.amount, 0),
-    pending: bills.filter(b => !b.isPaid).reduce((acc, b) => acc + b.amount, 0)
-  }), [bills]);
+    paid: billsForSelectedMonth.filter(b => b.isPaid).reduce((acc, b) => acc + b.amount, 0),
+    pending: billsForSelectedMonth.filter(b => !b.isPaid).reduce((acc, b) => acc + b.amount, 0)
+  }), [billsForSelectedMonth]);
 
   const upcomingBills = useMemo(() => (
     bills
@@ -1227,12 +1270,19 @@ function App() {
     setShiftState(createInitialShiftState());
   };
 
-  const handleSaveBill = (billData: Omit<Bill, 'id'>) => {
+  const handleSaveBill = (billData: BillFormData) => {
+    const { recurrenceMonths, ...billPayload } = billData;
     if (editingBill) {
-      setBills(prev => prev.map(b => (b.id === editingBill.id ? { ...b, ...billData } : b)));
+      setBills(prev => prev.map(b => (b.id === editingBill.id ? { ...b, ...billPayload } : b)));
       setEditingBill(null);
     } else {
-      setBills(prev => [...prev, { ...billData, id: Math.random().toString(36).substr(2, 9) }]);
+      const monthsToCreate = Math.max(1, Math.floor(recurrenceMonths || 1));
+      const newBills = Array.from({ length: monthsToCreate }, (_, index) => ({
+        ...billPayload,
+        id: Math.random().toString(36).substr(2, 9),
+        dueDate: addMonthsToISODate(billPayload.dueDate, index),
+      }));
+      setBills(prev => [...prev, ...newBills]);
     }
     setIsBillModalOpen(false);
   };
@@ -1303,6 +1353,14 @@ function App() {
       )}
 
       {/* Sidebar */}
+      {mobileMenuOpen && (
+        <button
+          type="button"
+          aria-label="Fechar menu"
+          onClick={() => setMobileMenuOpen(false)}
+          className="fixed inset-0 z-30 bg-black/40 md:hidden"
+        />
+      )}
       <aside className={`fixed inset-y-0 left-0 z-40 w-64 bg-slate-900 text-slate-300 transform transition-transform duration-300 ease-in-out md:relative md:translate-x-0 shrink-0 ${mobileMenuOpen ? 'translate-x-0' : '-translate-x-full'} ${activeTab === 'shift' ? 'md:w-20 lg:w-64' : ''}`}>
         <div className="p-6 hidden md:flex flex-col justify-center items-center border-b border-slate-800 h-24">
           <span className={`font-extrabold text-2xl tracking-tight text-white ${activeTab === 'shift' ? 'md:hidden lg:block' : ''}`}>FinanDrive</span>
@@ -1515,19 +1573,23 @@ function App() {
         ) : (
           /* Dashboard Content */
           <>
-            <div className="flex flex-col md:flex-row justify-between items-start md:items-center mb-8 gap-4">
-              <div className="flex items-center gap-4">
-                <div>
+            <div className={`flex flex-col md:flex-row justify-between items-start md:items-center mb-8 gap-4 ${activeTab === 'reports' ? 'md:justify-center' : ''}`}>
+              <div className={`flex items-center gap-4 ${activeTab === 'reports' ? 'w-full justify-center' : ''}`}>
+                <div className={activeTab === 'reports' ? 'text-center' : ''}>
                   <h1 className="text-2xl font-bold text-slate-800">{activeTab === 'dashboard' ? 'Painel de Controle' : activeTab === 'reports' ? 'Relatórios de Ganhos' : activeTab === 'bills' ? 'Contas & Planejamento' : 'Histórico Completo'}</h1>
-                  <p className="text-slate-500 text-sm flex items-center gap-1">
+                  <p className="text-slate-500 text-sm flex items-center gap-1 justify-center md:justify-start">
                     {activeTab === 'dashboard' && stats.pendingBillsTotalAll > 0 ? <span className="text-rose-500 font-medium">Você tem {formatCurrency(stats.pendingBillsTotalAll)} em contas pendentes.</span> : <span>Gestão profissional para motoristas.</span>}
                   </p>
                 </div>
-                <button onClick={() => setShowValues(!showValues)} className="hidden md:flex p-2 text-slate-400 hover:text-indigo-600 bg-white hover:bg-slate-50 rounded-lg border border-slate-200 transition-colors" title={showValues ? 'Ocultar Valores' : 'Mostrar Valores'}>{showValues ? <Eye size={20} /> : <EyeOff size={20} />}</button>
+                {activeTab !== 'reports' && (
+                  <button onClick={() => setShowValues(!showValues)} className="hidden md:flex p-2 text-slate-400 hover:text-indigo-600 bg-white hover:bg-slate-50 rounded-lg border border-slate-200 transition-colors" title={showValues ? 'Ocultar Valores' : 'Mostrar Valores'}>{showValues ? <Eye size={20} /> : <EyeOff size={20} />}</button>
+                )}
               </div>
-              <div className="flex flex-wrap gap-2 w-full md:w-auto">
-                <button onClick={() => setIsTransModalOpen(true)} className="flex-1 md:flex-none flex items-center justify-center gap-2 bg-white text-slate-700 border border-slate-200 px-4 py-2.5 rounded-xl hover:bg-slate-50 transition-all font-medium text-sm"><TrendingDown size={16} className="text-rose-500" />Novo Lançamento</button>
-              </div>
+              {activeTab === 'bills' && (
+                <div className="flex flex-wrap gap-2 w-full md:w-auto">
+                  <button onClick={() => setIsTransModalOpen(true)} className="flex-1 md:flex-none flex items-center justify-center gap-2 bg-white text-slate-700 border border-slate-200 px-4 py-2.5 rounded-xl hover:bg-slate-50 transition-all font-medium text-sm"><TrendingDown size={16} className="text-rose-500" />Novo Lançamento</button>
+                </div>
+              )}
             </div>
 
             {/* Dashboard Content */}
@@ -1652,7 +1714,6 @@ function App() {
             {activeTab === 'reports' && (
               <ReportsTab
                 transactions={transactions}
-                bills={bills}
                 showValues={showValues}
               />
             )}
@@ -1660,37 +1721,69 @@ function App() {
             {/* Bills Content */}
             {activeTab === 'bills' && (
               <div className="space-y-6 animate-in fade-in slide-in-from-bottom-4 duration-500">
-                <div className="grid grid-cols-2 gap-4">
-                  <div className="bg-white p-5 rounded-2xl shadow-sm border border-emerald-100 flex items-center justify-between">
-                    <div><p className="text-xs font-bold text-emerald-600 uppercase mb-1">Total Pago</p><h3 className="text-2xl font-bold text-emerald-700">{formatCurrency(billsSummary.paid)}</h3></div>
-                    <div className="bg-emerald-50 p-3 rounded-full text-emerald-600"><CheckCircle2 size={24} /></div>
+                <div className="bg-white p-4 rounded-2xl shadow-sm border border-slate-200 flex flex-wrap items-center gap-3 justify-between">
+                  <div className="flex flex-wrap items-center gap-4">
+                    <div className="flex items-center gap-2 text-emerald-700 text-sm font-semibold">
+                      <div className="bg-emerald-50 p-2 rounded-full text-emerald-600"><CheckCircle2 size={16} /></div>
+                      <span className="uppercase text-[10px] tracking-wider text-emerald-600">Total Pago</span>
+                      <span className="text-base font-bold">{formatCurrency(billsSummary.paid)}</span>
+                    </div>
+                    <div className="flex items-center gap-2 text-rose-700 text-sm font-semibold">
+                      <div className="bg-rose-50 p-2 rounded-full text-rose-600"><AlertCircle size={16} /></div>
+                      <span className="uppercase text-[10px] tracking-wider text-rose-600">A Pagar</span>
+                      <span className="text-base font-bold">{formatCurrency(billsSummary.pending)}</span>
+                    </div>
                   </div>
-                  <div className="bg-white p-5 rounded-2xl shadow-sm border border-rose-100 flex items-center justify-between">
-                    <div><p className="text-xs font-bold text-rose-600 uppercase mb-1">A Pagar</p><h3 className="text-2xl font-bold text-rose-700">{formatCurrency(billsSummary.pending)}</h3></div>
-                    <div className="bg-rose-50 p-3 rounded-full text-rose-600"><AlertCircle size={24} /></div>
+                  <div className="flex items-center gap-3">
+                    <div className="flex flex-col">
+                      <span className="text-[10px] font-bold uppercase text-slate-500">Mês</span>
+                      <select
+                        value={selectedBillsMonth}
+                        onChange={e => setSelectedBillsMonth(e.target.value)}
+                        className="border border-slate-200 rounded-lg px-3 py-2 text-sm bg-white"
+                      >
+                        {availableBillMonths.map(month => (
+                          <option key={month} value={month}>
+                            {formatMonthYearBr(month)}
+                          </option>
+                        ))}
+                      </select>
+                    </div>
+                    <button onClick={() => { setEditingBill(null); setIsBillModalOpen(true); }} className="flex items-center gap-2 bg-rose-600 text-white px-4 py-2 rounded-lg hover:bg-rose-700 transition-colors shadow-lg shadow-rose-200"><Plus size={16} /> Adicionar</button>
                   </div>
                 </div>
-                <div className="flex justify-between items-center bg-white p-6 rounded-2xl shadow-sm border border-slate-200">
-                  <div><h2 className="text-lg font-bold text-slate-800">Contas a Pagar</h2><p className="text-slate-500 text-sm">Gerencie suas obrigações futuras.</p></div>
-                  <button onClick={() => { setEditingBill(null); setIsBillModalOpen(true); }} className="flex items-center gap-2 bg-rose-600 text-white px-4 py-2 rounded-lg hover:bg-rose-700 transition-colors shadow-lg shadow-rose-200"><Plus size={16} /> Adicionar</button>
+                <div className="flex justify-between items-center bg-white p-4 rounded-2xl shadow-sm border border-slate-200">
+                  <div>
+                    <h2 className="text-lg font-bold text-slate-800">Contas a Pagar</h2>
+                    <p className="text-slate-500 text-sm">Exibindo {formatMonthYearBr(selectedBillsMonth)}.</p>
+                  </div>
                 </div>
-                <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
-                  {bills.map(bill => (
-                    <div key={bill.id} className={`p-5 rounded-xl border transition-all ${bill.isPaid ? 'bg-slate-50 border-slate-200 opacity-75' : 'bg-white border-rose-100 shadow-sm'}`}>
-                      <div className="flex justify-between items-start mb-3">
-                        <div className={`p-2 rounded-lg ${bill.isPaid ? 'bg-emerald-100 text-emerald-600' : 'bg-rose-100 text-rose-600'}`}>{bill.isPaid ? <Wallet size={20} /> : <CalendarClock size={20} />}</div>
-                        <div className="flex items-center gap-2">
-                          <span className={`text-lg font-bold ${bill.isPaid ? 'text-slate-500' : 'text-slate-800'}`}>{formatCurrency(bill.amount)}</span>
-                          <div className="flex">
-                            <button onClick={() => handleEditBill(bill)} className="p-2 text-slate-400 hover:text-indigo-600 hover:bg-indigo-50 rounded-full transition-colors" title="Editar conta"><Edit2 size={18} /></button>
-                            <button onClick={() => handleDeleteBill(bill.id)} className="p-2 text-slate-400 hover:text-rose-500 hover:bg-rose-50 rounded-full transition-colors" title="Excluir conta"><Trash2 size={18} /></button>
+                <div className="grid grid-cols-1 gap-3">
+                  {billsForSelectedMonth.map(bill => (
+                    <div key={bill.id} className={`rounded-xl border transition-all ${bill.isPaid ? 'bg-slate-50 border-slate-200 opacity-80' : 'bg-white border-slate-200 shadow-sm'}`}>
+                      <div className="flex flex-wrap items-center justify-between gap-3 p-4">
+                        <div className="flex items-center gap-3 min-w-0">
+                          <div className={`p-2 rounded-lg ${bill.isPaid ? 'bg-emerald-100 text-emerald-600' : 'bg-rose-100 text-rose-600'}`}>
+                            {bill.isPaid ? <Wallet size={18} /> : <CalendarClock size={18} />}
+                          </div>
+                          <div className="min-w-0">
+                            <h4 className={`text-sm font-semibold truncate ${bill.isPaid ? 'text-slate-500 line-through' : 'text-slate-800'}`}>{bill.description}</h4>
+                            <div className="flex flex-wrap items-center gap-2 text-[11px] text-slate-500">
+                              {bill.category && (
+                                <span className="uppercase font-bold tracking-wider text-slate-400">{bill.category}</span>
+                              )}
+                              <span>Vencimento: {formatDateBr(bill.dueDate)}</span>
+                            </div>
                           </div>
                         </div>
-                      </div>
-                      <div className="mb-1"><h4 className={`font-semibold ${bill.isPaid ? 'text-slate-500 line-through' : 'text-slate-800'}`}>{bill.description}</h4>{bill.category && <span className="text-[10px] uppercase font-bold tracking-wider text-slate-400">{bill.category}</span>}</div>
-                      <div className="flex justify-between items-center mt-4">
-                        <span className="text-xs text-slate-500">Vencimento: {formatDateBr(bill.dueDate)}</span>
-                        <button onClick={() => toggleBillPaid(bill.id)} className={`text-xs px-3 py-1 rounded-full border transition-colors ${bill.isPaid ? 'border-emerald-200 text-emerald-600 hover:bg-emerald-50' : 'border-slate-200 text-slate-600 hover:bg-slate-100'}`}>{bill.isPaid ? 'Marcar como Pendente' : 'Marcar como Pago'}</button>
+                        <div className="flex items-center gap-2">
+                          <span className={`text-base font-bold ${bill.isPaid ? 'text-slate-500' : 'text-slate-800'}`}>{formatCurrency(bill.amount)}</span>
+                          <button onClick={() => toggleBillPaid(bill.id)} className={`text-[11px] px-3 py-1 rounded-full border transition-colors ${bill.isPaid ? 'border-emerald-200 text-emerald-600 hover:bg-emerald-50' : 'border-slate-200 text-slate-600 hover:bg-slate-100'}`}>{bill.isPaid ? 'Marcar como Pendente' : 'Marcar como Pago'}</button>
+                          <div className="flex">
+                            <button onClick={() => handleEditBill(bill)} className="p-1.5 text-slate-400 hover:text-indigo-600 hover:bg-indigo-50 rounded-full transition-colors" title="Editar conta"><Edit2 size={16} /></button>
+                            <button onClick={() => handleDeleteBill(bill.id)} className="p-1.5 text-slate-400 hover:text-rose-500 hover:bg-rose-50 rounded-full transition-colors" title="Excluir conta"><Trash2 size={16} /></button>
+                          </div>
+                        </div>
                       </div>
                     </div>
                   ))}
