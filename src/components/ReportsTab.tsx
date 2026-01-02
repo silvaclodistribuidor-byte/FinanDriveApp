@@ -1,9 +1,5 @@
 import React, { useMemo, useState } from 'react';
-import {
-  BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer,
-  AreaChart, Area
-} from 'recharts';
-import { Filter } from 'lucide-react';
+import { Clock, Route, Filter, Target } from 'lucide-react';
 import { Transaction, TransactionType } from '../types';
 import { formatCurrencyPtBr } from '../utils/currency';
 
@@ -61,24 +57,59 @@ export const ReportsTab: React.FC<ReportsTabProps> = ({ transactions, showValues
     return { start: null, end };
   };
 
-  const chartData = useMemo(() => {
+  const shiftSummaries = useMemo(() => {
     const { start, end } = getRangeDates();
 
-    const dataMap = new Map<string, { date: string; income: number; expense: number }>();
-    const sorted = [...transactions].sort((a, b) => a.date.localeCompare(b.date));
-
-    sorted.forEach(t => {
-      if (shiftRange === 'custom' && !start) return;
+    const incomes = transactions.filter(t => {
+      const hasShiftFields =
+        t.durationHours !== undefined ||
+        t.mileage !== undefined ||
+        (t.description || '').toLowerCase().includes('turno');
+      if (!hasShiftFields || t.type !== TransactionType.INCOME) return false;
+      if (!start) return true;
       const d = parseDateFromInput(t.date);
-      if (start && (d < start || d > end)) return;
-      const existing = dataMap.get(t.date) || { date: t.date.substring(5), income: 0, expense: 0 };
-      if (t.type === TransactionType.INCOME) existing.income += t.amount;
-      else existing.expense += t.amount;
-      dataMap.set(t.date, existing);
+      return d >= start && d <= end;
     });
 
-    return Array.from(dataMap.values());
+    return incomes
+      .map(income => {
+        const relatedExpenses = transactions.filter(t =>
+          t.type === TransactionType.EXPENSE &&
+          t.date === income.date &&
+          ((t.description || '').toLowerCase().includes('turno') || income.id === t.id)
+        );
+
+        const expenseSum = relatedExpenses.reduce((acc, curr) => acc + curr.amount, 0);
+        const net = income.amount - expenseSum;
+        const km = income.mileage || 0;
+        const hours = income.durationHours || 0;
+
+        return {
+          id: income.id,
+          date: income.date,
+          gross: income.amount,
+          net,
+          km,
+          hours,
+          rsKm: km > 0 ? net / km : 0,
+          rsHour: hours > 0 ? net / hours : 0,
+        };
+      })
+      .sort((a, b) => b.date.localeCompare(a.date));
   }, [transactions, shiftRange, shiftStart, shiftEnd]);
+
+  const shiftTotals = useMemo(() => {
+    const totalKm = shiftSummaries.reduce((acc, s) => acc + s.km, 0);
+    const totalHours = shiftSummaries.reduce((acc, s) => acc + s.hours, 0);
+    const totalNet = shiftSummaries.reduce((acc, s) => acc + s.net, 0);
+
+    return {
+      totalKm,
+      totalHours,
+      rsPerKm: totalKm > 0 ? totalNet / totalKm : 0,
+      rsPerHour: totalHours > 0 ? totalNet / totalHours : 0,
+    };
+  }, [shiftSummaries]);
 
   return (
     <div className="space-y-6 animate-in fade-in slide-in-from-bottom-4 duration-500">
@@ -107,84 +138,57 @@ export const ReportsTab: React.FC<ReportsTabProps> = ({ transactions, showValues
         )}
       </div>
 
-      <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
-        <div className="bg-white p-6 rounded-2xl shadow-sm border border-slate-200">
-          <h3 className="font-bold text-slate-800 mb-6">Ganhos vs Despesas</h3>
-          <div className="h-64">
-            <ResponsiveContainer width="100%" height="100%">
-              <BarChart data={chartData}>
-                <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="#f1f5f9" />
-                <XAxis 
-                  dataKey="date" 
-                  axisLine={false} 
-                  tickLine={false} 
-                  tick={{fill: '#64748b', fontSize: 12}} 
-                  dy={10}
-                />
-                <YAxis 
-                  hide 
-                />
-                <Tooltip 
-                  cursor={{fill: '#f8fafc'}}
-                  contentStyle={{borderRadius: '12px', border: 'none', boxShadow: '0 4px 6px -1px rgb(0 0 0 / 0.1)'}}
-                  formatter={(value: number) => [formatCurrency(value, showValues), '']}
-                />
-                <Bar dataKey="income" name="Ganhos" fill="#3b82f6" radius={[4, 4, 0, 0]} barSize={20} />
-                <Bar dataKey="expense" name="Despesas" fill="#f43f5e" radius={[4, 4, 0, 0]} barSize={20} />
-              </BarChart>
-            </ResponsiveContainer>
+      <div className="bg-white p-5 rounded-2xl shadow-sm border border-slate-200 space-y-4">
+        <div className="flex items-center justify-between">
+          <h3 className="font-semibold text-slate-800">Relatório de Turnos</h3>
+          <span className="text-xs text-slate-400">Resumo do período</span>
+        </div>
+
+        <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+          <div className="bg-slate-50 border border-slate-200 rounded-xl p-3">
+            <div className="flex items-center gap-2 text-[11px] font-bold text-indigo-600 uppercase"><Target size={13} /> R$/km</div>
+            <div className="text-lg font-bold text-indigo-700">{formatCurrency(shiftTotals.rsPerKm, showValues)}</div>
+            <p className="text-[11px] text-slate-500 mt-1">Lucro líquido por km.</p>
+          </div>
+          <div className="bg-slate-50 border border-slate-200 rounded-xl p-3">
+            <div className="flex items-center gap-2 text-[11px] font-bold text-emerald-600 uppercase"><Clock size={13} /> R$/h</div>
+            <div className="text-lg font-bold text-emerald-700">{formatCurrency(shiftTotals.rsPerHour, showValues)}</div>
+            <p className="text-[11px] text-slate-500 mt-1">Lucro líquido por hora.</p>
+          </div>
+          <div className="bg-slate-50 border border-slate-200 rounded-xl p-3">
+            <div className="flex items-center gap-2 text-[11px] font-bold text-slate-600 uppercase"><Clock size={13} /> Horas</div>
+            <div className="text-lg font-bold text-slate-800">{shiftTotals.totalHours.toFixed(2)}h</div>
+            <p className="text-[11px] text-slate-500 mt-1">Tempo total no período.</p>
+          </div>
+          <div className="bg-slate-50 border border-slate-200 rounded-xl p-3">
+            <div className="flex items-center gap-2 text-[11px] font-bold text-slate-600 uppercase"><Route size={13} /> Km</div>
+            <div className="text-lg font-bold text-slate-800">{shiftTotals.totalKm.toFixed(1)} km</div>
+            <p className="text-[11px] text-slate-500 mt-1">Distância total.</p>
           </div>
         </div>
 
-        <div className="bg-white p-6 rounded-2xl shadow-sm border border-slate-200">
-          <h3 className="font-bold text-slate-800 mb-6">Evolução do Lucro</h3>
-          <div className="h-64">
-            <ResponsiveContainer width="100%" height="100%">
-              <AreaChart data={chartData}>
-                <defs>
-                  <linearGradient id="colorProfit" x1="0" y1="0" x2="0" y2="1">
-                    <stop offset="5%" stopColor="#10b981" stopOpacity={0.2}/>
-                    <stop offset="95%" stopColor="#10b981" stopOpacity={0}/>
-                  </linearGradient>
-                </defs>
-                <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="#f1f5f9" />
-                <XAxis 
-                  dataKey="date" 
-                  axisLine={false} 
-                  tickLine={false} 
-                  tick={{fill: '#64748b', fontSize: 12}} 
-                  dy={10}
-                />
-                <Tooltip 
-                   contentStyle={{borderRadius: '12px', border: 'none', boxShadow: '0 4px 6px -1px rgb(0 0 0 / 0.1)'}}
-                   formatter={(value: number, name: string, props: any) => {
-                     // Calculate net for tooltip
-                     if (name === 'income') return undefined; // hide raw
-                     const item = props.payload;
-                     const net = item.income - item.expense;
-                     return [formatCurrency(net, showValues), 'Lucro Líquido'];
-                   }}
-                />
-                <Area 
-                  type="monotone" 
-                  dataKey="income" // We just map structure, logic is visual
-                  stroke="#10b981" 
-                  fillOpacity={1} 
-                  fill="url(#colorProfit)" 
-                  strokeWidth={3}
-                />
-              </AreaChart>
-            </ResponsiveContainer>
+        <div className="bg-slate-50 border border-slate-200 rounded-xl p-4">
+          <h4 className="font-semibold text-slate-800 mb-3 text-sm">Turnos detalhados</h4>
+          <div className="space-y-2 max-h-72 overflow-y-auto pr-1">
+            {shiftSummaries.length === 0 && (
+              <div className="text-slate-500 text-sm flex items-center gap-2"><Filter size={14} />Nenhum turno encontrado para o filtro.</div>
+            )}
+            {shiftSummaries.map(shift => (
+              <div key={shift.id} className="bg-white border border-slate-200 rounded-lg p-3 shadow-sm">
+                <div className="flex justify-between text-[11px] text-slate-500 mb-1">
+                  <span>{parseDateFromInput(shift.date).toLocaleDateString('pt-BR')}</span>
+                  <span>{shift.hours.toFixed(2)}h • {shift.km.toFixed(1)} km</span>
+                </div>
+                <div className="grid grid-cols-2 md:grid-cols-4 gap-2 text-sm font-semibold text-slate-800">
+                  <div>Bruto: {formatCurrency(shift.gross, showValues)}</div>
+                  <div>Líquido: {formatCurrency(shift.net, showValues)}</div>
+                  <div>R$/km: {formatCurrency(shift.rsKm, showValues)}</div>
+                  <div>R$/h: {formatCurrency(shift.rsHour, showValues)}</div>
+                </div>
+              </div>
+            ))}
           </div>
         </div>
-      </div>
-      
-      <div className="bg-slate-900 rounded-2xl p-6 text-white text-center">
-         <h4 className="text-lg font-bold mb-2">Resumo Geral</h4>
-         <p className="text-slate-400 max-w-lg mx-auto">
-           A análise detalhada ajuda a identificar os dias mais lucrativos. 
-           Utilize o filtro de histórico para ver dados mais antigos.
-         </p>
       </div>
     </div>
   );
