@@ -11,9 +11,20 @@ export const AdminPushSetup: React.FC<AdminPushSetupProps> = ({ adminEmail }) =>
   const [status, setStatus] = useState('');
   const [token, setToken] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
+  const [firestoreError, setFirestoreError] = useState<string | null>(null);
+
+  const formatErrorMessage = (error: unknown) => {
+    if (!error || typeof error !== 'object') return 'Erro desconhecido.';
+    const err = error as { code?: string; message?: string };
+    if (err.code && err.message) return `${err.code}: ${err.message}`;
+    if (err.code) return err.code;
+    if (err.message) return err.message;
+    return 'Erro desconhecido.';
+  };
 
   const handleEnable = async () => {
     setStatus('');
+    setFirestoreError(null);
     setLoading(true);
     try {
       const supported = await isSupported();
@@ -21,7 +32,9 @@ export const AdminPushSetup: React.FC<AdminPushSetupProps> = ({ adminEmail }) =>
         setStatus('Notificações não suportadas neste dispositivo.');
         return;
       }
+      console.log('[AdminPushSetup] Notification.permission (before):', Notification.permission);
       const perm = await Notification.requestPermission();
+      console.log('[AdminPushSetup] Notification.permission (after):', perm);
       if (perm !== 'granted') {
         setStatus('Permissão negada para notificações.');
         return;
@@ -33,7 +46,10 @@ export const AdminPushSetup: React.FC<AdminPushSetupProps> = ({ adminEmail }) =>
         setStatus('VAPID key não configurada.');
         return;
       }
-      const fcmToken = await getToken(messaging, { vapidKey, serviceWorkerRegistration: swReg });
+      const fcmToken = await getToken(messaging, { vapidKey, serviceWorkerRegistration: swReg }).catch((err) => {
+        console.error('[AdminPushSetup] getToken error:', err);
+        throw err;
+      });
       if (!fcmToken) {
         setStatus('Não foi possível gerar o token de notificação.');
         return;
@@ -44,12 +60,16 @@ export const AdminPushSetup: React.FC<AdminPushSetupProps> = ({ adminEmail }) =>
         enabled: true,
         createdAt: serverTimestamp(),
         userAgent: navigator.userAgent,
-      }, { merge: true });
+      }, { merge: true }).catch((err) => {
+        console.error('[AdminPushSetup] Firestore save error:', err);
+        setFirestoreError(formatErrorMessage(err));
+        throw err;
+      });
       setToken(fcmToken);
-      setStatus('Notificações ativadas com sucesso.');
+      setStatus('Notificações ativadas com sucesso. Token salvo.');
     } catch (err) {
       console.error('Erro ao ativar notificações:', err);
-      setStatus('Falha ao ativar notificações.');
+      setStatus(`Falha ao ativar notificações. ${formatErrorMessage(err)}`);
     } finally {
       setLoading(false);
     }
@@ -71,7 +91,7 @@ export const AdminPushSetup: React.FC<AdminPushSetupProps> = ({ adminEmail }) =>
       setStatus('Notificações desativadas.');
     } catch (err) {
       console.error('Erro ao desativar notificações:', err);
-      setStatus('Falha ao desativar notificações.');
+      setStatus(`Falha ao desativar notificações. ${formatErrorMessage(err)}`);
     } finally {
       setLoading(false);
     }
@@ -102,6 +122,9 @@ export const AdminPushSetup: React.FC<AdminPushSetupProps> = ({ adminEmail }) =>
         </button>
       </div>
       {status && <div className="text-xs text-slate-500">{status}</div>}
+      {firestoreError && (
+        <div className="text-xs text-rose-500">Firestore: {firestoreError}</div>
+      )}
     </div>
   );
 };
