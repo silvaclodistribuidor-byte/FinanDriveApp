@@ -37,6 +37,10 @@ service cloud.firestore {
             request.resource.data.access.status == 'pending'
             && request.resource.data.access.approvedAt == null
           )
+          || (
+            request.resource.data.access.status == null
+            && request.resource.data.access.approvedAt == null
+          )
         );
     }
 

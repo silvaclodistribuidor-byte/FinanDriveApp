@@ -1,5 +1,5 @@
 import React, { useEffect, useState } from 'react';
-import { collection, doc, onSnapshot, orderBy, query, serverTimestamp, updateDoc, where } from 'firebase/firestore';
+import { collection, doc, onSnapshot, query, serverTimestamp, updateDoc, where } from 'firebase/firestore';
 import { DRIVERS_COLLECTION } from '../services/firestoreService';
 import { db } from '../firebaseConfig';
 import { AdminPushSetup } from './AdminPushSetup';
@@ -28,7 +28,6 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({ adminEmail }) => {
     const q = query(
       collection(db, DRIVERS_COLLECTION),
       where('access.status', '==', 'pending'),
-      orderBy('access.requestedAt', 'desc')
     );
     const unsubscribe = onSnapshot(q, (snapshot) => {
       const next = snapshot.docs.map(docSnap => {
@@ -40,6 +39,10 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({ adminEmail }) => {
           phone: data?.profile?.phone,
           requestedAt: data?.access?.requestedAt?.toDate ? data.access.requestedAt.toDate() : null,
         };
+      }).sort((a, b) => {
+        const aTime = a.requestedAt?.getTime() ?? 0;
+        const bTime = b.requestedAt?.getTime() ?? 0;
+        return bTime - aTime;
       });
       setPendingDrivers(next);
     });

@@ -1418,7 +1418,27 @@ function App() {
     }
 
     if (accessStatus !== 'approved') {
-      return <PendingApproval phone={userProfile?.phone} />;
+      return (
+        <PendingApproval
+          phone={userProfile?.phone}
+          onCancel={async () => {
+            await updateDriverDoc(user.uid, {
+              profile: {
+                name: userProfile?.name || auth.currentUser?.displayName || '',
+                email: user.email ?? '',
+                phone: '',
+              },
+              access: {
+                status: null,
+                requestedAt: null,
+                approvedAt: null,
+              },
+            });
+            setUserProfile(prev => (prev ? { ...prev, phone: '' } : prev));
+            setAccessStatus(null);
+          }}
+        />
+      );
     }
   }
 
