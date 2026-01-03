@@ -10,6 +10,7 @@ interface PendingDriver {
   email?: string;
   phone?: string;
   requestedAt?: Date | null;
+  needsFix?: boolean;
 }
 
 const formatDateTime = (value?: Date | null) => {
@@ -35,12 +36,15 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({ adminEmail }) => {
       (snapshot) => {
         const next = snapshot.docs.map(docSnap => {
           const data = docSnap.data() as any;
+          const rawRequestedAt = data?.access?.requestedAt;
+          const requestedAt = rawRequestedAt?.toDate ? rawRequestedAt.toDate() : null;
           return {
             id: docSnap.id,
             name: data?.profile?.name,
             email: data?.profile?.email,
             phone: data?.profile?.phone,
-            requestedAt: data?.access?.requestedAt?.toDate ? data.access.requestedAt.toDate() : null,
+            requestedAt,
+            needsFix: Boolean(rawRequestedAt && !rawRequestedAt?.toDate),
           };
         }).sort((a, b) => {
           const aTime = a.requestedAt?.getTime() ?? 0;
@@ -53,7 +57,7 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({ adminEmail }) => {
       (error) => {
         console.error('AdminPanel onSnapshot error:', error);
         setPendingDrivers([]);
-        setErrorMessage('Não foi possível carregar os pendentes. Verifique permissões.');
+        setErrorMessage(`${error.code || 'erro'}: ${error.message || 'Não foi possível carregar os pendentes.'}`);
       }
     );
     return () => unsubscribe();
@@ -66,6 +70,16 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({ adminEmail }) => {
     });
   };
 
+  const handleFixPending = async () => {
+    const toFix = pendingDrivers.filter(driver => driver.needsFix);
+    if (toFix.length === 0) return;
+    await Promise.all(toFix.map(driver =>
+      updateDoc(doc(db, DRIVERS_COLLECTION, driver.id), {
+        'access.requestedAt': serverTimestamp(),
+      })
+    ));
+  };
+
   return (
     <div className="space-y-6 animate-in fade-in slide-in-from-bottom-4 duration-500">
       <AdminPushSetup adminEmail={adminEmail} />
@@ -76,6 +90,13 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({ adminEmail }) => {
             <h2 className="text-lg font-bold text-slate-800">Pendentes de aprovação</h2>
             <p className="text-xs text-slate-500">Total: {pendingDrivers.length}</p>
           </div>
+          <button
+            type="button"
+            onClick={handleFixPending}
+            className="text-xs px-3 py-2 rounded-lg border border-slate-200 text-slate-600 hover:bg-slate-50"
+          >
+            Corrigir pendentes
+          </button>
         </div>
         {errorMessage && (
           <div className="mb-3 text-xs text-rose-500">{errorMessage}</div>

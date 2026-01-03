@@ -1,6 +1,6 @@
 // src/services/firestoreService.ts
 import { signOut } from 'firebase/auth';
-import { doc, getDoc, setDoc } from 'firebase/firestore';
+import { FieldValue, doc, getDoc, setDoc } from 'firebase/firestore';
 import { auth, db } from '../firebaseConfig';
 import { Category } from '../types';
 
@@ -8,6 +8,9 @@ import { Category } from '../types';
 // Esta função remove campos indefinidos e normaliza aninhamentos
 // para evitar erros de permissão/escrita.
 const sanitizeForFirestore = (value: any): any => {
+  if (value instanceof FieldValue) {
+    return value;
+  }
   if (Array.isArray(value)) {
     return value.map(sanitizeForFirestore);
   }

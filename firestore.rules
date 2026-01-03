@@ -2,48 +2,27 @@ rules_version = '2';
 
 service cloud.firestore {
   match /databases/{database}/documents {
-    function isSignedIn() {
-      return request.auth != null;
-    }
-
+    function signedIn() { return request.auth != null; }
     function isAdmin() {
-      return isSignedIn()
+      return signedIn()
         && request.auth.token.email != null
         && request.auth.token.email.matches('(?i)^silvaclodistribuidor@gmail\\.com$');
     }
+    function isOwner(docId) { return signedIn() && request.auth.uid == docId; }
 
-    function accessUnchanged() {
-      return request.resource.data.access.status == resource.data.access.status
-        && request.resource.data.access.approvedAt == resource.data.access.approvedAt
-        && request.resource.data.access.requestedAt == resource.data.access.requestedAt;
-    }
+    match /driversData/{driverId} {
+      // admin pode ler todos
+      allow read: if isOwner(driverId) || isAdmin();
 
-    match /driversData/{userId} {
-      allow read, write: if isAdmin();
+      // dono pode criar/atualizar o próprio doc
+      // mas NÃO pode setar approved
+      allow create: if isOwner(driverId);
 
-      allow read: if isSignedIn() && request.auth.uid == userId;
+      allow update: if isAdmin()
+        || (isOwner(driverId)
+            && !(request.resource.data.access.status == "approved"));
 
-      allow create: if isSignedIn()
-        && request.auth.uid == userId
-        && (
-          request.resource.data.access.status == 'pending'
-          || request.resource.data.access.status == null
-        )
-        && request.resource.data.access.approvedAt == null;
-
-      allow update: if isSignedIn()
-        && request.auth.uid == userId
-        && (
-          accessUnchanged()
-          || (
-            request.resource.data.access.status == 'pending'
-            && request.resource.data.access.approvedAt == null
-          )
-          || (
-            request.resource.data.access.status == null
-            && request.resource.data.access.approvedAt == null
-          )
-        );
+      allow delete: if false;
     }
 
     match /adminDevices/{token} {
