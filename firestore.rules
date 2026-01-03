@@ -1,32 +1,54 @@
 rules_version = '2';
-
 service cloud.firestore {
   match /databases/{database}/documents {
+
     function signedIn() { return request.auth != null; }
+
     function isAdmin() {
       return signedIn()
         && request.auth.token.email != null
         && request.auth.token.email.matches('(?i)^silvaclodistribuidor@gmail\\.com$');
     }
-    function isOwner(docId) { return signedIn() && request.auth.uid == docId; }
 
+    function isOwner(docId) {
+      return signedIn() && request.auth.uid == docId;
+    }
+
+    // driversData: dono lê/escreve o próprio doc; admin lê todos e aprova
     match /driversData/{driverId} {
-      // admin pode ler todos
       allow read: if isOwner(driverId) || isAdmin();
 
-      // dono pode criar/atualizar o próprio doc
-      // mas NÃO pode setar approved
+      // dono pode criar/atualizar o próprio doc (perfil, lançamentos, etc)
+      // mas NÃO pode se auto-aprovar
       allow create: if isOwner(driverId);
 
       allow update: if isAdmin()
-        || (isOwner(driverId)
-            && !(request.resource.data.access.status == "approved"));
+        || (isOwner(driverId) &&
+            !(request.resource.data.access.status == "approved"));
 
       allow delete: if false;
     }
 
+    // adminDevices: só admin salva token de push
     match /adminDevices/{token} {
       allow read, write: if isAdmin();
+    }
+
+    // manter suas coleções existentes (userData/users) do mesmo jeito, mas admin pode ler se necessário
+    match /userData/{userId} {
+      allow read, write: if isOwner(userId) || isAdmin();
+    }
+
+    match /users/{userId} {
+      allow read, write: if isOwner(userId) || isAdmin();
+      match /{document=**} {
+        allow read, write: if isOwner(userId) || isAdmin();
+      }
+    }
+
+    // deny all no final
+    match /{document=**} {
+      allow read, write: if false;
     }
   }
 }
