@@ -354,7 +354,7 @@ function App() {
 
   // Shift Logic
   const [shiftState, setShiftState] = useState<ShiftState>(createInitialShiftState());
-  const isAdmin = Boolean(user?.email && user.email.toLowerCase() === ADMIN_EMAIL);
+  const isAdmin = Boolean(user?.email && user.email.trim().toLowerCase() === ADMIN_EMAIL);
 
   useEffect(() => {
     if (!isAdmin) return;

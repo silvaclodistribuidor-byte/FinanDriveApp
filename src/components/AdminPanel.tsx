@@ -23,29 +23,39 @@ interface AdminPanelProps {
 
 export const AdminPanel: React.FC<AdminPanelProps> = ({ adminEmail }) => {
   const [pendingDrivers, setPendingDrivers] = useState<PendingDriver[]>([]);
+  const [errorMessage, setErrorMessage] = useState<string | null>(null);
 
   useEffect(() => {
     const q = query(
       collection(db, DRIVERS_COLLECTION),
       where('access.status', '==', 'pending'),
     );
-    const unsubscribe = onSnapshot(q, (snapshot) => {
-      const next = snapshot.docs.map(docSnap => {
-        const data = docSnap.data() as any;
-        return {
-          id: docSnap.id,
-          name: data?.profile?.name,
-          email: data?.profile?.email,
-          phone: data?.profile?.phone,
-          requestedAt: data?.access?.requestedAt?.toDate ? data.access.requestedAt.toDate() : null,
-        };
-      }).sort((a, b) => {
-        const aTime = a.requestedAt?.getTime() ?? 0;
-        const bTime = b.requestedAt?.getTime() ?? 0;
-        return bTime - aTime;
-      });
-      setPendingDrivers(next);
-    });
+    const unsubscribe = onSnapshot(
+      q,
+      (snapshot) => {
+        const next = snapshot.docs.map(docSnap => {
+          const data = docSnap.data() as any;
+          return {
+            id: docSnap.id,
+            name: data?.profile?.name,
+            email: data?.profile?.email,
+            phone: data?.profile?.phone,
+            requestedAt: data?.access?.requestedAt?.toDate ? data.access.requestedAt.toDate() : null,
+          };
+        }).sort((a, b) => {
+          const aTime = a.requestedAt?.getTime() ?? 0;
+          const bTime = b.requestedAt?.getTime() ?? 0;
+          return bTime - aTime;
+        });
+        setPendingDrivers(next);
+        setErrorMessage(null);
+      },
+      (error) => {
+        console.error('AdminPanel onSnapshot error:', error);
+        setPendingDrivers([]);
+        setErrorMessage('Não foi possível carregar os pendentes. Verifique permissões.');
+      }
+    );
     return () => unsubscribe();
   }, []);
 
@@ -67,6 +77,9 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({ adminEmail }) => {
             <p className="text-xs text-slate-500">Total: {pendingDrivers.length}</p>
           </div>
         </div>
+        {errorMessage && (
+          <div className="mb-3 text-xs text-rose-500">{errorMessage}</div>
+        )}
         <div className="space-y-3">
           {pendingDrivers.length === 0 && (
             <div className="text-sm text-slate-500">Nenhum motorista pendente no momento.</div>
