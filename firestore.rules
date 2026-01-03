@@ -1,0 +1,47 @@
+rules_version = '2';
+
+service cloud.firestore {
+  match /databases/{database}/documents {
+    function isSignedIn() {
+      return request.auth != null;
+    }
+
+    function isAdmin() {
+      return isSignedIn() && request.auth.token.email == 'silvaclodistribuidor@gmail.com';
+    }
+
+    function accessUnchanged() {
+      return request.resource.data.access.status == resource.data.access.status
+        && request.resource.data.access.approvedAt == resource.data.access.approvedAt
+        && request.resource.data.access.requestedAt == resource.data.access.requestedAt;
+    }
+
+    match /driversData/{userId} {
+      allow read, write: if isAdmin();
+
+      allow read: if isSignedIn() && request.auth.uid == userId;
+
+      allow create: if isSignedIn()
+        && request.auth.uid == userId
+        && (
+          request.resource.data.access.status == 'pending'
+          || request.resource.data.access.status == null
+        )
+        && request.resource.data.access.approvedAt == null;
+
+      allow update: if isSignedIn()
+        && request.auth.uid == userId
+        && (
+          accessUnchanged()
+          || (
+            request.resource.data.access.status == 'pending'
+            && request.resource.data.access.approvedAt == null
+          )
+        );
+    }
+
+    match /adminDevices/{token} {
+      allow read, write: if isAdmin();
+    }
+  }
+}

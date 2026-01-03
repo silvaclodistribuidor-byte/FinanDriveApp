@@ -26,7 +26,7 @@ const sanitizeForFirestore = (value: any): any => {
 // Re-export para ser usado no App.tsx
 export { auth, db };
 
-const COLLECTION_NAME = 'driversData'; // 1 documento por motorista (uid)
+export const DRIVERS_COLLECTION = 'driversData'; // 1 documento por motorista (uid)
 
 // Logout real usando Firebase Auth
 export const logoutUser = async () => {
@@ -45,7 +45,7 @@ export const loadAppData = async (
   if (!userId || !db) return { data: null, exists: false };
 
   try {
-    const ref = doc(db, COLLECTION_NAME, userId);
+    const ref = doc(db, DRIVERS_COLLECTION, userId);
     const snap = await getDoc(ref);
 
     if (!snap.exists()) {
@@ -78,7 +78,7 @@ export const saveAppData = async (data: any, userId: string) => {
   if (!userId || !db) return;
 
   try {
-    const ref = doc(db, COLLECTION_NAME, userId);
+    const ref = doc(db, DRIVERS_COLLECTION, userId);
 
     // Garante que cada categoria tenha owner e sem campos undefined
     const normalizedCategories = (data.categories || []).map((cat: Category) => ({
@@ -108,11 +108,18 @@ export const saveAppData = async (data: any, userId: string) => {
   }
 };
 
+export const updateDriverDoc = async (userId: string, payload: Record<string, any>) => {
+  if (!userId || !db) return;
+  const ref = doc(db, DRIVERS_COLLECTION, userId);
+  const sanitizedPayload = sanitizeForFirestore(payload);
+  await setDoc(ref, sanitizedPayload, { merge: true });
+};
+
 // Cria o documento do motorista apenas se ainda não existir
 export const createDriverDocIfMissing = async (data: any, userId: string) => {
   if (!userId || !db) return false;
 
-  const ref = doc(db, COLLECTION_NAME, userId);
+  const ref = doc(db, DRIVERS_COLLECTION, userId);
   const snap = await getDoc(ref);
 
   if (snap.exists()) {
