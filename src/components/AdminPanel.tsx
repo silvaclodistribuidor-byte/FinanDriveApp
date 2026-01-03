@@ -72,18 +72,11 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({ adminEmail }) => {
 
   const handleReject = async (driver: PendingDriver) => {
     const confirmed = window.confirm(
-      'Recusar este motorista? Isso apagará os dados e bloqueará novos pedidos desse usuário.'
+      'Recusar este motorista? Isso apagará os dados desse usuário.'
     );
     if (!confirmed) return;
 
     const batch = writeBatch(db);
-    batch.set(doc(db, 'blockedUsers', driver.id), {
-      uid: driver.id,
-      email: driver.email || '',
-      phone: driver.phone || '',
-      reason: 'Recusado pelo admin',
-      blockedAt: serverTimestamp(),
-    }, { merge: true });
     batch.delete(doc(db, 'driversData', driver.id));
     batch.delete(doc(db, 'drivers', driver.id));
     batch.delete(doc(db, 'userData', driver.id));
