@@ -1,5 +1,5 @@
 import React, { useEffect, useState } from 'react';
-import { collection, doc, onSnapshot, query, serverTimestamp, updateDoc, where } from 'firebase/firestore';
+import { collection, doc, onSnapshot, query, serverTimestamp, updateDoc, where, writeBatch } from 'firebase/firestore';
 import { DRIVERS_COLLECTION } from '../services/firestoreService';
 import { db } from '../firebaseConfig';
 import { AdminPushSetup } from './AdminPushSetup';
@@ -70,6 +70,28 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({ adminEmail }) => {
     });
   };
 
+  const handleReject = async (driver: PendingDriver) => {
+    const confirmed = window.confirm(
+      'Recusar este motorista? Isso apagará os dados e bloqueará novos pedidos desse usuário.'
+    );
+    if (!confirmed) return;
+
+    const batch = writeBatch(db);
+    batch.set(doc(db, 'blockedUsers', driver.id), {
+      uid: driver.id,
+      email: driver.email || '',
+      phone: driver.phone || '',
+      reason: 'Recusado pelo admin',
+      blockedAt: serverTimestamp(),
+    }, { merge: true });
+    batch.delete(doc(db, 'driversData', driver.id));
+    batch.delete(doc(db, 'drivers', driver.id));
+    batch.delete(doc(db, 'userData', driver.id));
+    batch.delete(doc(db, 'users', driver.id));
+    await batch.commit();
+    setErrorMessage('Pedido recusado e dados removidos.');
+  };
+
   const handleFixPending = async () => {
     const toFix = pendingDrivers.filter(driver => driver.needsFix);
     if (toFix.length === 0) return;
@@ -113,13 +135,22 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({ adminEmail }) => {
                 <div className="text-xs text-slate-500">{driver.phone || '-'}</div>
                 <div className="text-[11px] text-slate-400">Solicitado em {formatDateTime(driver.requestedAt)}</div>
               </div>
-              <button
-                type="button"
-                onClick={() => handleApprove(driver.id)}
-                className="px-4 py-2 rounded-xl bg-emerald-600 text-white text-sm font-semibold hover:bg-emerald-500"
-              >
-                Aprovar
-              </button>
+              <div className="flex flex-wrap gap-2">
+                <button
+                  type="button"
+                  onClick={() => handleApprove(driver.id)}
+                  className="px-4 py-2 rounded-xl bg-emerald-600 text-white text-sm font-semibold hover:bg-emerald-500"
+                >
+                  Aprovar
+                </button>
+                <button
+                  type="button"
+                  onClick={() => handleReject(driver)}
+                  className="px-4 py-2 rounded-xl bg-rose-600 text-white text-sm font-semibold hover:bg-rose-500"
+                >
+                  Recusar
+                </button>
+              </div>
             </div>
           ))}
         </div>

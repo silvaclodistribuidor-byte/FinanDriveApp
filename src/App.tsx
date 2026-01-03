@@ -49,6 +49,7 @@ import { Login } from './components/Login';
 import { PhoneCapture } from './components/PhoneCapture';
 import { PendingApproval } from './components/PendingApproval';
 import { AdminPanel } from './components/AdminPanel';
+import { BlockedAccess } from './components/BlockedAccess';
 import { computeMinimumForBills } from './utils/bills';
 import { formatCurrencyInputMask, parseCurrencyInputToNumber, formatCurrencyPtBr } from './utils/currency';
 import {
@@ -60,7 +61,7 @@ import {
   updateDriverDoc,
   DRIVERS_COLLECTION,
 } from "./services/firestoreService";
-import { doc, onSnapshot, serverTimestamp } from 'firebase/firestore';
+import { doc, getDoc, onSnapshot, serverTimestamp } from 'firebase/firestore';
 import { Transaction, TransactionType, ExpenseCategory, Bill, ShiftState, DEFAULT_CATEGORIES, Category, BillFormData } from './types';
 
 const ADMIN_EMAIL = 'silvaclodistribuidor@gmail.com';
@@ -309,6 +310,7 @@ function App() {
   const hydrationCompleteRef = useRef(false);
   const [userProfile, setUserProfile] = useState<{ name?: string; email?: string; phone?: string } | null>(null);
   const [accessStatus, setAccessStatus] = useState<string | null>(null);
+  const [isBlocked, setIsBlocked] = useState(false);
 
   // App Data State
   const [transactions, setTransactions] = useState<Transaction[]>(INITIAL_TRANSACTIONS);
@@ -414,6 +416,18 @@ function App() {
     });
     return () => unsubscribe();
   }, [user]);
+
+  useEffect(() => {
+    if (!user || isAdmin) {
+      setIsBlocked(false);
+      return;
+    }
+    const ref = doc(db, 'blockedUsers', user.uid);
+    const unsubscribe = onSnapshot(ref, (snap) => {
+      setIsBlocked(snap.exists());
+    });
+    return () => unsubscribe();
+  }, [user, isAdmin]);
 
   // 2. Load Data and create only when missing
   useEffect(() => {
@@ -531,6 +545,12 @@ function App() {
           setOpeningBalances(initial.openingBalances);
           setUserProfile(initial.profile);
           setAccessStatus(initial.access?.status ?? null);
+
+          const blockedSnap = await getDoc(doc(db, 'blockedUsers', user.uid));
+          if (blockedSnap.exists()) {
+            setIsBlocked(true);
+            return;
+          }
 
           await createDriverDocIfMissing(initial, user.uid);
         }
@@ -1389,6 +1409,9 @@ function App() {
   }
 
   if (!isAdmin) {
+    if (isBlocked) {
+      return <BlockedAccess email={user.email} onLogout={logoutUser} />;
+    }
     if (!userProfile?.phone) {
       return (
         <PhoneCapture

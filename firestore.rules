@@ -26,7 +26,12 @@ service cloud.firestore {
         || (isOwner(driverId) &&
             !(request.resource.data.access.status == "approved"));
 
-      allow delete: if false;
+      allow delete: if isAdmin();
+    }
+
+    match /drivers/{driverId} {
+      allow read, write: if isOwner(driverId) || isAdmin();
+      allow delete: if isAdmin();
     }
 
     // adminDevices: só admin salva token de push
@@ -34,15 +39,23 @@ service cloud.firestore {
       allow read, write: if isAdmin();
     }
 
+    match /blockedUsers/{uid} {
+      allow read: if isOwner(uid) || isAdmin();
+      allow write: if isAdmin();
+    }
+
     // manter suas coleções existentes (userData/users) do mesmo jeito, mas admin pode ler se necessário
     match /userData/{userId} {
       allow read, write: if isOwner(userId) || isAdmin();
+      allow delete: if isAdmin();
     }
 
     match /users/{userId} {
       allow read, write: if isOwner(userId) || isAdmin();
+      allow delete: if isAdmin();
       match /{document=**} {
         allow read, write: if isOwner(userId) || isAdmin();
+        allow delete: if isAdmin();
       }
     }
 
