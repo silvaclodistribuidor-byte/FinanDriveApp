@@ -1,5 +1,5 @@
 import React, { useEffect, useState } from 'react';
-import { collection, doc, onSnapshot, query, serverTimestamp, updateDoc, where, writeBatch } from 'firebase/firestore';
+import { collection, deleteDoc, doc, getDoc, onSnapshot, query, serverTimestamp, updateDoc, where } from 'firebase/firestore';
 import { DRIVERS_COLLECTION } from '../services/firestoreService';
 import { db } from '../firebaseConfig';
 import { AdminPushSetup } from './AdminPushSetup';
@@ -72,22 +72,29 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({ adminEmail }) => {
 
   const handleReject = async (driver: PendingDriver) => {
     const confirmed = window.confirm(
-      'Recusar este motorista? Isso apagará os dados desse usuário.'
+      'Recusar este pedido? Isso removerá os dados pendentes.'
     );
     if (!confirmed) return;
 
     try {
-      const batch = writeBatch(db);
-      batch.delete(doc(db, 'driversData', driver.id));
-      batch.delete(doc(db, 'drivers', driver.id));
-      batch.delete(doc(db, 'userData', driver.id));
-      batch.delete(doc(db, 'users', driver.id));
-      await batch.commit();
+      await deleteDoc(doc(db, 'driversData', driver.id));
+
+      const mirrorCollections = ['drivers', 'userData', 'users'];
+      await Promise.all(mirrorCollections.map(async (collectionName) => {
+        const ref = doc(db, collectionName, driver.id);
+        const snap = await getDoc(ref);
+        if (snap.exists()) {
+          await deleteDoc(ref);
+        }
+      }));
       setErrorMessage('Pedido recusado e dados removidos.');
     } catch (error) {
       console.error('Erro ao recusar pendente:', error);
       const err = error as { code?: string; message?: string };
-      setErrorMessage(`${err.code || 'erro'}: ${err.message || 'Falha ao recusar pendente.'}`);
+      const prefix = err.code === 'permission-denied'
+        ? 'Sem permissão para remover o pedido.'
+        : 'Falha ao recusar pendente.';
+      setErrorMessage(`${prefix} ${err.code || ''} ${err.message || ''}`.trim());
     }
   };
 
