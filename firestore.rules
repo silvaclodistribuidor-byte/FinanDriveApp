@@ -29,6 +29,11 @@ service cloud.firestore {
       allow delete: if isAdmin();
     }
 
+    match /drivers/{driverId} {
+      allow read, write: if isOwner(driverId) || isAdmin();
+      allow delete: if isAdmin();
+    }
+
     // adminDevices: só admin salva token de push
     match /adminDevices/{token} {
       allow read, write: if isAdmin();

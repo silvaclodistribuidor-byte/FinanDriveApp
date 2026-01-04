@@ -76,13 +76,19 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({ adminEmail }) => {
     );
     if (!confirmed) return;
 
-    const batch = writeBatch(db);
-    batch.delete(doc(db, 'driversData', driver.id));
-    batch.delete(doc(db, 'drivers', driver.id));
-    batch.delete(doc(db, 'userData', driver.id));
-    batch.delete(doc(db, 'users', driver.id));
-    await batch.commit();
-    setErrorMessage('Pedido recusado e dados removidos.');
+    try {
+      const batch = writeBatch(db);
+      batch.delete(doc(db, 'driversData', driver.id));
+      batch.delete(doc(db, 'drivers', driver.id));
+      batch.delete(doc(db, 'userData', driver.id));
+      batch.delete(doc(db, 'users', driver.id));
+      await batch.commit();
+      setErrorMessage('Pedido recusado e dados removidos.');
+    } catch (error) {
+      console.error('Erro ao recusar pendente:', error);
+      const err = error as { code?: string; message?: string };
+      setErrorMessage(`${err.code || 'erro'}: ${err.message || 'Falha ao recusar pendente.'}`);
+    }
   };
 
   const handleFixPending = async () => {
